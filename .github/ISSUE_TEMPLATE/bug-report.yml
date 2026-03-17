@@ -1,0 +1,96 @@
+name: Bug report
+description: Report a reproducible problem in RayLimit behavior, packaging, or documentation.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the problem directly.
+      placeholder: RayLimit reports a concrete UUID path in dry-run, but execute remains blocked for the same runtime.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - discover
+        - inspect
+        - limit
+        - install or uninstall scripts
+        - release package
+        - documentation
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: execution_mode
+    attributes:
+      label: Where did you see it?
+      options:
+        - dry-run planning
+        - execute apply
+        - remove or cleanup
+        - discovery or inspection only
+        - documentation or repository surface
+    validations:
+      required: true
+
+  - type: textarea
+    id: commands
+    attributes:
+      label: Command or workflow
+      description: Paste the command sequence or the exact install or package workflow. Redact secrets if needed.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include version, Linux distribution, kernel, and whether you ran from a release install or from source.
+      placeholder: |
+        RayLimit: v0.1.0-beta
+        Install path: release package
+        Linux: Debian 12
+        Kernel: 6.1.x
+        Xray target: host process, container, or other relevant runtime context
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Paste the smallest useful output, error text, or JSON fragment.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I reviewed the current docs and checked for an existing report.
+          required: true
+        - label: I redacted secrets and private identifiers where needed.
+          required: true

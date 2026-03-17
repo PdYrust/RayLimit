@@ -1,0 +1,56 @@
+name: Package
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-linux:
+    name: Package Linux artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Read version metadata
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw_version="$(tr -d '\r\n' < VERSION)"
+          if [[ -z "$raw_version" ]]; then
+            echo "VERSION is empty" >&2
+            exit 1
+          fi
+
+          echo "raw=${raw_version}" >> "$GITHUB_OUTPUT"
+          echo "display=v${raw_version#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release packages
+        run: make package
+
+      - name: Verify package outputs
+        run: make verify-packages
+
+      - name: List package outputs
+        run: find dist -maxdepth 2 -type f | sort
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: raylimit-packages-${{ steps.version.outputs.display }}-linux
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

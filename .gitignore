@@ -1,0 +1,126 @@
+# Go build, test, coverage, and module workspace artifacts
+bin/
+build/
+dist/
+coverage/
+site/
+vendor/
+*.test
+*.coverprofile
+coverage.out
+cover.out
+*.prof
+*.pprof
+go.work
+go.work.sum
+
+# Local environment and runtime files
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+*.local
+*.log
+*.pid
+*.pid.lock
+*.seed
+*.sock
+run/
+tmp/
+temp/
+.tmp/
+.cache/
+
+# Secrets, keys, and certificates
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.csr
+*.der
+*.jks
+*.kubeconfig
+*.secrets
+*.secret
+secrets.*
+*.tfvars
+*.tfvars.json
+
+# Docker and container-local overrides
+docker-compose.override.yml
+docker-compose.local.yml
+compose.override.yml
+compose.local.yml
+
+# Release artifacts and archives
+artifacts/
+release/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+
+# Editors and IDEs
+.idea/
+.vscode/
+.fleet/
+*.iml
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.Spotlight-V100/
+.Trashes/
+._*
+
+# Python virtual environments and caches
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+
+# Node and package manager artifacts
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.turbo/
+.parcel-cache/
+npm-debug.log*
+yarn-*.log*
+pnpm-debug.log*
+
+# Terraform and infrastructure state
+.terraform/
+.terragrunt-cache/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Generic backups and patch remnants
+*.bak
+*.orig
+*.rej

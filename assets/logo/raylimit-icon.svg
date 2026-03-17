@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 1280 1000"
+  role="img"
+  aria-labelledby="raylimitTitle raylimitDesc">
+  <title id="raylimitTitle">RayLimit icon</title>
+  <desc id="raylimitDesc">A stylized Xray-inspired mark framed by black curly braces.</desc>
+  <g fill="#000000" transform="translate(280 120) scale(0.72)">
+    <polygon points="530,530 900,530 650,650 530,1000" />
+    <polygon points="470,530 470,900 350,650 0,530" />
+    <polygon points="530,470 530,100 650,350 1000,470" />
+    <polygon points="470,470 100,470 350,350 470,0" />
+  </g>
+  <g
+    fill="none"
+    stroke="#000000"
+    stroke-width="54"
+    stroke-linecap="round"
+    stroke-linejoin="round">
+    <path d="M248 88C184 88 160 126 160 202V324C160 395 126 443 84 470C126 497 160 545 160 616V798C160 874 184 912 248 912" />
+    <path d="M1032 88C1096 88 1120 126 1120 202V324C1120 395 1154 443 1196 470C1154 497 1120 545 1120 616V798C1120 874 1096 912 1032 912" />
+  </g>
+</svg>

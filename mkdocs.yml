@@ -1,0 +1,62 @@
+site_name: RayLimit
+site_description: Reconcile-aware traffic shaping for Xray runtimes on Linux.
+site_url: https://pdyrust.github.io/RayLimit/
+repo_url: https://github.com/PdYrust/RayLimit
+repo_name: PdYrust/RayLimit
+docs_dir: docs
+use_directory_urls: true
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+extra:
+  alternate:
+    - name: English
+      link: /RayLimit/en/
+      lang: en
+    - name: فارسی
+      link: /RayLimit/fa/
+      lang: fa
+markdown_extensions:
+  - admonition
+  - attr_list
+  - fenced_code
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+extra_javascript:
+  - https://unpkg.com/mermaid@10/dist/mermaid.min.js
+  - javascripts/mermaid.js
+nav:
+  - Home: index.md
+  - English:
+      - Overview: en/index.md
+      - Getting started:
+          - Installation: en/getting-started/installation.md
+          - Common commands: en/getting-started/common-commands.md
+          - Practical usage: en/getting-started/practical-usage.md
+      - Speed limiters:
+          - Overview: en/speed-limiters/index.md
+          - IP: en/speed-limiters/ip.md
+          - UUID: en/speed-limiters/uuid.md
+          - Inbound: en/speed-limiters/inbound.md
+          - Outbound: en/speed-limiters/outbound.md
+          - Connection: en/speed-limiters/connection.md
+      - Reference:
+          - Validation: en/reference/validation.md
+          - Troubleshooting: en/reference/troubleshooting.md
+          - Glossary: en/reference/glossary.md
+      - Internals:
+          - Architecture: en/internals/architecture.md
+          - Development: en/internals/development.md
+      - Diagrams: en/diagrams/index.md
+  - Persian:
+      - Overview: fa/index.md
+      - Getting started:
+          - Installation: fa/getting-started/installation.md
+          - Common commands: fa/getting-started/common-commands.md
+          - Practical usage: fa/getting-started/practical-usage.md

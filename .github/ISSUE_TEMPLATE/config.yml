@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://pdyrust.github.io/RayLimit/
+    about: Installation, common commands, troubleshooting, and current speed limiter scope.
+  - name: Security reporting
+    url: https://github.com/PdYrust/RayLimit/security
+    about: Do not report vulnerabilities in public issues. Use private security reporting when available.
+  - name: Project channel
+    url: https://t.me/PdYrust
+    about: Project updates and lightweight community discussion.

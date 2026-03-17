@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag with a leading v, for example v0.1.0-beta
+        required: true
+        type: string
+      title:
+        description: Release title, for example RayLimit v0.1.0-beta
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        default: true
+        type: boolean
+      draft:
+        description: Create the GitHub Release as a draft
+        required: true
+        default: false
+        type: boolean
+      notes_mode:
+        description: How release notes should be supplied
+        required: true
+        default: generated
+        type: choice
+        options:
+          - generated
+          - file
+          - manual
+          - none
+      notes_file:
+        description: Repository-relative notes file path for file mode
+        required: false
+        type: string
+      notes_body:
+        description: Manual release notes text for manual mode
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build packages and create release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate release inputs
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ inputs.tag }}"
+          title="${{ inputs.title }}"
+
+          if [[ -z "$tag" || "$tag" != v* ]]; then
+            echo "tag must start with v, for example v0.1.0-beta" >&2
+            exit 1
+          fi
+
+          package_version="${tag#v}"
+          if [[ -z "$package_version" ]]; then
+            echo "tag must include a version after the leading v" >&2
+            exit 1
+          fi
+
+          case "$package_version" in
+            *[!A-Za-z0-9._-]*)
+              echo "tag version contains characters that are not allowed in package names: $package_version" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ -z "$title" ]]; then
+            echo "title is required" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release notes
+        id: notes
+        shell: bash
+        env:
+          NOTES_MODE: ${{ inputs.notes_mode }}
+          NOTES_FILE: ${{ inputs.notes_file }}
+          NOTES_BODY: ${{ inputs.notes_body }}
+        run: |
+          set -euo pipefail
+
+          case "$NOTES_MODE" in
+            generated)
+              echo "generate=true" >> "$GITHUB_OUTPUT"
+              echo "body_path=" >> "$GITHUB_OUTPUT"
+              ;;
+            none)
+              echo "generate=false" >> "$GITHUB_OUTPUT"
+              echo "body_path=" >> "$GITHUB_OUTPUT"
+              ;;
+            file)
+              if [[ -z "$NOTES_FILE" ]]; then
+                echo "notes_file is required when notes_mode=file" >&2
+                exit 1
+              fi
+              if [[ ! -f "$NOTES_FILE" ]]; then
+                echo "notes file does not exist: $NOTES_FILE" >&2
+                exit 1
+              fi
+              echo "generate=false" >> "$GITHUB_OUTPUT"
+              echo "body_path=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+              ;;
+            manual)
+              if [[ -z "$NOTES_BODY" ]]; then
+                echo "notes_body is required when notes_mode=manual" >&2
+                exit 1
+              fi
+              notes_path="$RUNNER_TEMP/release-notes.md"
+              printf '%s\n' "$NOTES_BODY" > "$notes_path"
+              echo "generate=false" >> "$GITHUB_OUTPUT"
+              echo "body_path=$notes_path" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "unsupported notes_mode: $NOTES_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Run tests
+        run: make test
+
+      - name: Build release packages
+        run: make package VERSION=${{ steps.metadata.outputs.package_version }}
+
+      - name: Verify release packages
+        run: make verify-packages VERSION=${{ steps.metadata.outputs.package_version }}
+
+      - name: List release outputs
+        run: find dist -maxdepth 2 -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          name: ${{ steps.metadata.outputs.title }}
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: ${{ steps.notes.outputs.generate == 'true' }}
+          body_path: ${{ steps.notes.outputs.body_path }}
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
