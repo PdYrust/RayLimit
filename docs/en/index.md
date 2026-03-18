@@ -4,7 +4,7 @@ The English documentation is the primary reference track for RayLimit.
 
 RayLimit is built for operators who need to inspect Xray runtimes and control traffic deliberately, and for technical readers who want a serious explanation of the product model and backend truth.
 
-Use the header language selector to move between English and Persian documentation.
+Use the sidebar and top navigation to move between practical operator guidance and deeper technical pages.
 
 ## Quick Start
 

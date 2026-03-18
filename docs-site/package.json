@@ -1,0 +1,22 @@
+{
+  "name": "raylimit-docs-site",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "sync:assets": "node ./scripts/sync-public-assets.mjs",
+    "predev": "npm run sync:assets",
+    "prebuild": "npm run sync:assets",
+    "dev": "next dev",
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "^16.1.7",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  }
+}

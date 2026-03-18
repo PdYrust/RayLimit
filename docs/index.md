@@ -4,7 +4,7 @@ RayLimit is a Linux CLI for discovering Xray runtimes, inspecting runtime state,
 
 The implemented speed limiter families are validated and actively developed. Their concrete execution scopes differ by the quality of the runtime evidence and selectors available on the host.
 
-Use the header language selector to move between English and Persian documentation.
+Use the docs overview, sidebar, and top navigation to move through the English documentation set.
 
 ## Browse By Need
 

@@ -10,7 +10,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-111111" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/go-1.22%2B-00ADD8" alt="Go 1.22+">
   <img src="https://img.shields.io/badge/status-beta-111111" alt="Beta status">
-  <a href="https://pdyrust.github.io/RayLimit/"><img src="https://img.shields.io/badge/docs-English%20and%20Persian--ready-0A7EA4" alt="Documentation"></a>
+  <a href="https://pdyrust.github.io/RayLimit/"><img src="https://img.shields.io/badge/docs-English-0A7EA4" alt="Documentation"></a>
+  <a href="https://t.me/PdYrust"><img src="https://img.shields.io/badge/Telegram-%40PdYrust-229ED9?logo=telegram&logoColor=white" alt="Telegram channel"></a>
 </p>
 
 RayLimit is a Linux CLI for discovering Xray runtimes, inspecting runtime state, and applying guarded speed limiters with dry-run-first workflows.
@@ -63,7 +64,6 @@ raylimit limit --pid 1234 --uuid user-a --device eth0 --direction upload --rate 
 
 - Creator: YrustPd
 - Repository: https://github.com/PdYrust/RayLimit
-- Telegram: https://t.me/PdYrust
 
 ## License
 
