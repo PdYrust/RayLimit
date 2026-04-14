@@ -1,0 +1,73 @@
+# Glossary
+
+## Runtime Target
+
+One discovered Xray runtime selected by PID, container identity, or another stable runtime-local selector.
+
+## Runtime-Local
+
+Scoped to one selected runtime target. The same tag or IP rule on another runtime is a different subject.
+
+## Speed Limiter Family
+
+The product-facing identity RayLimit uses to select traffic: `ip`, `inbound`, or `outbound`.
+
+## Subject
+
+The concrete runtime-scoped object a limiter request refers to, such as one runtime-local IP baseline, one specific IP, one inbound tag, or one outbound tag.
+
+## Baseline
+
+For the IP family, the runtime-local default created by `--ip all --rate ...`.
+
+## Override
+
+For the IP family, a specific `--ip <ip> --rate ...` rule that takes priority over the runtime-local baseline for that address.
+
+## Unlimited Exception
+
+For the IP family, a specific `--ip <ip> --unlimited` rule that bypasses the runtime-local baseline for that address.
+
+## Dry-Run
+
+The default mode where RayLimit plans and reports without mutating the host.
+
+## Execute
+
+The explicit live-mutation mode enabled with `--execute`.
+
+## Observation
+
+The host-state inspection step that checks whether the relevant `tc` and `nftables` state exists and whether it can be compared safely.
+
+## Reconcile
+
+The process of comparing desired state to observed state and deciding whether the correct outcome is `apply`, `no_op`, `replace`, or `remove`.
+
+## Replace
+
+A reconcile decision meaning the selected subject already has applied state, but that state differs from the desired state and needs replacement. In operator language this is the reapply path.
+
+## No-Op
+
+A result where the observed managed state already matches the requested state, so no further change is needed.
+
+## Concrete Execution
+
+A state where RayLimit has enough trustworthy evidence to attach traffic honestly and mutate the host.
+
+## Blocked By Design
+
+An explicit safety verdict that stops live mutation when the current selector or observed state is not trustworthy enough.
+
+## Direct Attachment
+
+A packet-facing `tc` attachment path that does not depend on an auxiliary mark-restoration backend. The IP family uses this model.
+
+## Mark-Backed Attachment
+
+A path where `nftables` classifies traffic or restores marks and `tc fw` attaches the marked traffic to the selected class. Inbound and outbound use this model when the selector is concrete.
+
+## Managed State
+
+The `tc` and related backend objects that RayLimit can attribute to one selected subject and therefore reconcile or remove conservatively.

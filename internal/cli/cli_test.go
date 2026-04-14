@@ -23,7 +23,7 @@ func TestRunWithoutArgumentsShowsRootHelp(t *testing.T) {
 	}
 
 	for _, fragment := range []string{
-		"RayLimit\nReconcile-aware traffic shaping for Xray runtimes.",
+		"RayLimit\nReconcile-aware traffic shaping for Xray runtimes on Linux.",
 		"Core commands:",
 		"  limit     Plan or execute a reconcile-aware traffic limit",
 		"  discover  Discover Xray runtime targets",
@@ -145,7 +145,7 @@ func TestRunVersionCommandPrintsBuildDetails(t *testing.T) {
 	if !strings.Contains(stdout.String(), "built       2026-03-12T00:00:00Z") {
 		t.Fatalf("expected build time details, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "Reconcile-aware traffic shaping for Xray runtimes.") {
+	if !strings.Contains(stdout.String(), "Reconcile-aware traffic shaping for Xray runtimes on Linux.") {
 		t.Fatalf("expected tagline in version details, got %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "Build:") {
@@ -217,16 +217,7 @@ func TestRunHelpForLimitCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), "--remove") {
 		t.Fatalf("expected remove workflow help text, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "--uuid <uuid>") {
-		t.Fatalf("expected broader-target help text, got %q", stdout.String())
-	}
-	if strings.Contains(stdout.String(), "--uuid-legacy") {
-		t.Fatalf("expected legacy UUID compatibility flag to be retired from help, got %q", stdout.String())
-	}
-	if strings.Contains(stdout.String(), "--allow-uuid-multi-session-execute") {
-		t.Fatalf("expected legacy UUID fan-out opt-in flag to be retired from help, got %q", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "--ip <ip>") || !strings.Contains(stdout.String(), "--inbound <tag>") || !strings.Contains(stdout.String(), "--outbound <tag>") {
+	if !strings.Contains(stdout.String(), "--ip <ip|all>") || !strings.Contains(stdout.String(), "--inbound <tag>") || !strings.Contains(stdout.String(), "--outbound <tag>") {
 		t.Fatalf("expected ip, inbound, and outbound workflow help text, got %q", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "--inbound <tag>                   Inbound-scoped runtime workflow target (concrete for one readable concrete TCP listener)") {
@@ -241,23 +232,29 @@ func TestRunHelpForLimitCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Examples:") {
 		t.Fatalf("expected examples section in limit help, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "raylimit limit --pid 4242 --uuid user-a --device eth0 --direction upload --rate 1048576") {
-		t.Fatalf("expected UUID example in limit help, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "raylimit limit --pid 4242 --ip all --device eth0 --direction upload --rate 1048576") {
+		t.Fatalf("expected ip all baseline example in limit help, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--unlimited") {
+		t.Fatalf("expected unlimited exception help text, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "raylimit limit --pid 4242 --ip 203.0.113.4 --device eth0 --direction upload --unlimited") {
+		t.Fatalf("expected specific ip unlimited example in limit help, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "raylimit limit --pid 4242 --inbound api-in --device eth0 --direction upload --rate 1048576") {
+		t.Fatalf("expected inbound example in limit help, got %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "Rule precedence:") {
 		t.Fatalf("expected coexistence guidance in limit help, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "Product direction:") || !strings.Contains(stdout.String(), "UUID is the preferred identity-oriented limiter.") {
-		t.Fatalf("expected product-direction guidance in limit help, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "specific IP target overrides an ip all baseline") {
+		t.Fatalf("expected ip all precedence guidance, got %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "Current limiter status:") {
 		t.Fatalf("expected limiter-status guidance, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "--ip is concrete for IPv4, normalizes IPv4-mapped IPv6 to the same managed IPv4 identity, and supports native IPv6 within the current u32 backend assumption of no IPv6 extension headers") {
+	if !strings.Contains(stdout.String(), "--ip all installs a runtime-local baseline through a direct matchall attachment") {
 		t.Fatalf("expected executable-workflow guidance, got %q", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "--connection remains a session-scoped planning and cleanup workflow until a trustworthy runtime-aware traffic classifier exists. Real apply execution stays blocked, but remove can still clean observed class-oriented state.") {
-		t.Fatalf("expected connection workflow boundary guidance in help text, got %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "--inbound adds concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag.") {
 		t.Fatalf("expected inbound workflow boundary guidance in help text, got %q", stdout.String())
@@ -265,14 +262,79 @@ func TestRunHelpForLimitCommand(t *testing.T) {
 	if !strings.Contains(stdout.String(), "--outbound adds concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark without proxy or dialer-proxy indirection.") {
 		t.Fatalf("expected outbound workflow boundary guidance in help text, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "Plain --uuid uses the shared UUID aggregate pool path.") {
-		t.Fatalf("expected UUID aggregate direction in help text, got %q", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "Broader remote-target or metadata-only routing contexts remain future work until a safe exact-user remote-socket classifier exists.") {
-		t.Fatalf("expected aggregate UUID capability boundary guidance, got %q", stdout.String())
+	if strings.Contains(stdout.String(), "--connection <session-id>") {
+		t.Fatalf("expected connection workflow help text to be removed, got %q", stdout.String())
 	}
 
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", stderr.String())
+	}
+}
+
+func TestRunLimitRejectsUnlimitedWithIPAllTarget(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"limit", "--pid", "4242", "--ip", "all", "--device", "eth0", "--direction", "upload", "--unlimited"}, &stdout, &stderr)
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout output, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--unlimited requires a specific --ip target") {
+		t.Fatalf("expected unlimited validation error, got %q", stderr.String())
+	}
+}
+
+func TestRunLimitRejectsUnlimitedWithInboundTarget(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"limit", "--pid", "4242", "--inbound", "api-in", "--device", "eth0", "--direction", "upload", "--unlimited"}, &stdout, &stderr)
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout output, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--unlimited requires a specific --ip target") {
+		t.Fatalf("expected inbound-plus-unlimited validation error, got %q", stderr.String())
+	}
+}
+
+func TestRunLimitRejectsRateWithUnlimited(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"limit", "--pid", "4242", "--ip", "203.0.113.10", "--device", "eth0", "--direction", "upload", "--rate", "2048", "--unlimited"}, &stdout, &stderr)
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout output, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "cannot use --rate with --unlimited") {
+		t.Fatalf("expected rate-plus-unlimited validation error, got %q", stderr.String())
+	}
+}
+
+func TestRunLimitRejectsRemoveWithUnlimited(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := Run([]string{"limit", "--pid", "4242", "--ip", "203.0.113.10", "--device", "eth0", "--direction", "upload", "--remove", "--unlimited"}, &stdout, &stderr)
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout output, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "cannot use --unlimited with --remove") {
+		t.Fatalf("expected remove-plus-unlimited validation error, got %q", stderr.String())
 	}
 }

@@ -155,6 +155,81 @@ func TestDesiredManagedStateForIPPlanUsesConcreteOwnedObjects(t *testing.T) {
 	}
 }
 
+func TestDesiredManagedStateForIPBaselinePlanUsesAllOwnerKey(t *testing.T) {
+	desired := testDesiredStateForPolicy(t, policy.Policy{
+		Name: "ip-all-limit",
+		Target: policy.Target{
+			Kind: policy.TargetKindIP,
+			All:  true,
+		},
+		Limits: policy.LimitPolicy{
+			Upload: &policy.RateLimit{BytesPerSecond: 2048},
+		},
+	})
+	plan, err := (Planner{}).Plan(limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: desired.Subject,
+		Desired: &desired,
+	}, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	})
+	if err != nil {
+		t.Fatalf("expected baseline managed test plan to succeed, got %v", err)
+	}
+
+	state, err := DesiredManagedState(plan)
+	if err != nil {
+		t.Fatalf("expected baseline desired managed state to succeed, got %v", err)
+	}
+
+	if !strings.Contains(state.OwnerKey, "|ip|all") {
+		t.Fatalf("expected baseline ip owner key, got %#v", state)
+	}
+	if len(findManagedObjectsByKind(state.Objects, ManagedObjectRootQDisc)) != 1 ||
+		len(findManagedObjectsByKind(state.Objects, ManagedObjectClass)) != 1 ||
+		len(findManagedObjectsByKind(state.Objects, ManagedObjectDirectAttachmentFilter)) != 1 {
+		t.Fatalf("expected root qdisc, class, and one baseline direct attachment filter, got %#v", state.Objects)
+	}
+}
+
+func TestDesiredManagedStateForIPUnlimitedPlanOmitsClassOwnership(t *testing.T) {
+	desired := testDesiredStateForPolicy(t, policy.Policy{
+		Name:   "ip-unlimited",
+		Effect: policy.EffectExclude,
+		Target: policy.Target{
+			Kind:  policy.TargetKindIP,
+			Value: "203.0.113.10",
+		},
+	})
+	plan, err := (Planner{}).Plan(limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: desired.Subject,
+		Desired: &desired,
+	}, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	})
+	if err != nil {
+		t.Fatalf("expected unlimited managed test plan to succeed, got %v", err)
+	}
+
+	state, err := DesiredManagedState(plan)
+	if err != nil {
+		t.Fatalf("expected unlimited desired managed state to succeed, got %v", err)
+	}
+
+	if len(findManagedObjectsByKind(state.Objects, ManagedObjectRootQDisc)) != 1 {
+		t.Fatalf("expected one managed root qdisc, got %#v", state.Objects)
+	}
+	if len(findManagedObjectsByKind(state.Objects, ManagedObjectClass)) != 0 {
+		t.Fatalf("expected unlimited plan to avoid managed classes, got %#v", state.Objects)
+	}
+	if len(findManagedObjectsByKind(state.Objects, ManagedObjectDirectAttachmentFilter)) != 1 {
+		t.Fatalf("expected unlimited plan to keep one direct attachment filter, got %#v", state.Objects)
+	}
+}
+
 func TestDesiredManagedStateForInboundMarkPlanRequiresRuntimeEvidence(t *testing.T) {
 	plan := testManagedPlan(t, policy.TargetKindInbound, DirectionUpload, 2048)
 	execution := testInboundMarkAttachmentExecution(t, plan)
@@ -182,46 +257,6 @@ func TestDesiredManagedStateForInboundMarkPlanRequiresRuntimeEvidence(t *testing
 	for _, object := range state.Objects {
 		if !object.RetainRequiresRuntimeEvidence {
 			t.Fatalf("expected inbound mark-backed ownership to require runtime evidence for retention, got %#v", state.Objects)
-		}
-	}
-}
-
-func TestDesiredUUIDAggregateManagedStateRequiresRuntimeEvidence(t *testing.T) {
-	plan, err := (Planner{}).PlanUUIDAggregate(UUIDAggregatePlanInput{
-		Operation: UUIDAggregateOperationApply,
-		Membership: testUUIDAggregateMembership(
-			t,
-			testUUIDAggregateSession("conn-1"),
-			testUUIDAggregateSession("conn-2"),
-		),
-		Scope: Scope{
-			Device:    "eth0",
-			Direction: DirectionUpload,
-		},
-		Limits: policy.LimitPolicy{
-			Upload: &policy.RateLimit{BytesPerSecond: 2048},
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected aggregate apply plan to succeed, got %v", err)
-	}
-
-	state, err := DesiredUUIDAggregateManagedState(plan)
-	if err != nil {
-		t.Fatalf("expected desired aggregate managed state to succeed, got %v", err)
-	}
-
-	if state.OwnerKey != plan.Membership.Subject.Key() {
-		t.Fatalf("expected aggregate owner key %q, got %#v", plan.Membership.Subject.Key(), state)
-	}
-	if len(findManagedObjectsByKind(state.Objects, ManagedObjectRootQDisc)) != 1 ||
-		len(findManagedObjectsByKind(state.Objects, ManagedObjectUUIDAggregateClass)) != 1 ||
-		len(findManagedObjectsByKind(state.Objects, ManagedObjectUUIDAggregateAttachmentFilter)) != 2 {
-		t.Fatalf("expected aggregate root, class, and two attachment filters, got %#v", state.Objects)
-	}
-	for _, object := range state.Objects {
-		if !object.RetainRequiresRuntimeEvidence {
-			t.Fatalf("expected aggregate managed state retention to require live runtime evidence, got %#v", state.Objects)
 		}
 	}
 }
@@ -264,56 +299,6 @@ func TestClassifyManagedStateMarksObservedIPObjectsAsStaleAndCleanupEligible(t *
 	root, ok := findStaleObjectByKind(inventory.Stale, ManagedObjectRootQDisc)
 	if !ok || !root.CleanupEligible {
 		t.Fatalf("expected stale root qdisc cleanup to be eligible after stale direct cleanup, got %#v", inventory.Stale)
-	}
-}
-
-func TestObservedUUIDAggregateManagedStateDetectsAttachmentOnlyOwnedState(t *testing.T) {
-	plan, err := (Planner{}).PlanUUIDAggregate(UUIDAggregatePlanInput{
-		Operation:  UUIDAggregateOperationRemove,
-		Membership: testUUIDAggregateMembership(t),
-		Scope: Scope{
-			Device:    "eth0",
-			Direction: DirectionUpload,
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected aggregate remove plan to succeed, got %v", err)
-	}
-	snapshot := Snapshot{
-		Device: "eth0",
-		QDiscs: []QDiscState{{
-			Kind:   "htb",
-			Handle: plan.Handles.RootHandle,
-			Parent: "root",
-		}},
-		Filters: []FilterState{
-			{Kind: "u32", Parent: plan.Handles.RootHandle, Protocol: "ip", Preference: 120, FlowID: plan.Handles.ClassID},
-			{Kind: "u32", Parent: plan.Handles.RootHandle, Protocol: "ip", Preference: 140, FlowID: plan.Handles.ClassID},
-		},
-	}
-
-	observed, err := ObservedUUIDAggregateManagedState(snapshot, NftablesSnapshot{}, plan)
-	if err != nil {
-		t.Fatalf("expected observed aggregate managed state to succeed, got %v", err)
-	}
-	if len(findManagedObjectsByKind(observed.Objects, ManagedObjectUUIDAggregateClass)) != 0 {
-		t.Fatalf("expected attachment-only observed state to avoid stale class ownership, got %#v", observed.Objects)
-	}
-	if len(findManagedObjectsByKind(observed.Objects, ManagedObjectUUIDAggregateAttachmentFilter)) != 2 {
-		t.Fatalf("expected two observed aggregate attachment filters, got %#v", observed.Objects)
-	}
-
-	inventory, err := ClassifyManagedState(ManagedStateSet{OwnerKey: observed.OwnerKey}, observed)
-	if err != nil {
-		t.Fatalf("expected aggregate managed state classification to succeed, got %v", err)
-	}
-	root, ok := findStaleObjectByKind(inventory.Stale, ManagedObjectRootQDisc)
-	if !ok || !root.CleanupEligible {
-		t.Fatalf("expected attachment-only aggregate root cleanup to stay eligible, got %#v", inventory.Stale)
-	}
-	filter, ok := findStaleObjectByKind(inventory.Stale, ManagedObjectUUIDAggregateAttachmentFilter)
-	if !ok || !filter.CleanupEligible {
-		t.Fatalf("expected observed aggregate attachment filters to be stale and cleanup-eligible without live membership proof, got %#v", inventory.Stale)
 	}
 }
 

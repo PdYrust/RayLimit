@@ -1,0 +1,21 @@
+{
+  "name": "RayLimit Documentation",
+  "short_name": "RayLimit Docs",
+  "theme_color": "#0a1726",
+  "background_color": "#0a1726",
+  "display": "standalone",
+  "scope": ".",
+  "start_url": ".",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ]
+}

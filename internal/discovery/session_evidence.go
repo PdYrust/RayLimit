@@ -192,14 +192,6 @@ type SessionEvidenceProvider interface {
 	ObserveSessions(ctx context.Context, runtime SessionRuntime) (SessionEvidenceResult, error)
 }
 
-// UUIDSessionEvidenceProvider can perform a UUID-targeted live evidence query
-// when a provider can validate one requested UUID more accurately than a
-// runtime-wide session listing.
-type UUIDSessionEvidenceProvider interface {
-	SessionEvidenceProvider
-	ObserveUUIDSessions(ctx context.Context, runtime SessionRuntime, uuid string) (SessionEvidenceResult, error)
-}
-
 func sameEvidenceRuntime(left SessionRuntime, right SessionRuntime) bool {
 	return left.Source == right.Source &&
 		strings.TrimSpace(left.Provider) == strings.TrimSpace(right.Provider) &&

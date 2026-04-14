@@ -1,0 +1,95 @@
+# IP Baseline And Exceptions
+
+This scenario shows the full IP model on one runtime:
+
+- create a runtime-local baseline
+- override one specific IP
+- mark one specific IP as unlimited
+- remove the specific rule cleanly
+- remove the baseline cleanly
+
+## Start With Inspection
+
+```bash
+sudo raylimit inspect --pid 1234
+```
+
+Confirm the runtime selection first. Everything that follows is runtime-local.
+
+## 1. Preview And Apply The Runtime-Local Baseline
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096 --execute
+```
+
+After this step, the selected runtime has a baseline upload cap for all visible client IPs on `eth0`.
+
+## 2. Add A Specific Override
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048 --execute
+```
+
+That address now has its own explicit upload rate. The baseline still applies to other IPs on the same runtime and direction.
+
+## 3. Add A Specific Unlimited Exception
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited --execute
+```
+
+That address now bypasses the baseline for upload on the selected runtime and device.
+
+## 4. Repeat The Same Request To Check For No-Op
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+```
+
+If the managed unlimited state already matches, the command can return a no-op decision instead of pretending a change is needed.
+
+## 5. Remove The Specific Override
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
+```
+
+That removes only the explicit specific-IP rule for `203.0.113.10`. It does not remove the runtime-local baseline.
+
+## 6. Remove The Specific Unlimited Exception
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --remove
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --remove --execute
+```
+
+Specific-IP remove is intentionally shared across the specific limit and specific unlimited forms. RayLimit clears the explicit specific rule forms for that subject and direction.
+
+## 7. Remove The Baseline
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove --execute
+```
+
+That removes the runtime-local baseline itself.
+
+## Optional Download-Side Variant
+
+If you also need download shaping, run the same model on the download side explicitly:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction download --rate 4096
+sudo raylimit limit --pid 1234 --ip 2001:db8::10 --device eth0 --direction download --rate 2048
+```
+
+## Operator Notes
+
+- a specific override does not delete or weaken the baseline
+- a specific unlimited rule bypasses the baseline only for that IP and direction
+- remove stays scoped to the selected subject
+- repeated preview commands are useful because they show whether the state is already correct

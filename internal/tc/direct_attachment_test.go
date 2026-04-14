@@ -18,7 +18,7 @@ func TestBuildDirectAttachmentExecutionForIP(t *testing.T) {
 	execution, err := BuildDirectAttachmentExecution(binding, Scope{
 		Device:    "eth0",
 		Direction: DirectionUpload,
-	}, "1:2a")
+	}, limiter.DesiredModeLimit, "1:2a")
 	if err != nil {
 		t.Fatalf("expected direct attachment execution construction to succeed, got %v", err)
 	}
@@ -32,7 +32,7 @@ func TestBuildDirectAttachmentExecutionForIP(t *testing.T) {
 	if execution.Rules[0].Identity.Value != "203.0.113.10" {
 		t.Fatalf("expected canonical ipv4 client identity, got %#v", execution.Rules[0])
 	}
-	if execution.Rules[0].MatchField != UUIDAggregateAttachmentMatchSource {
+	if execution.Rules[0].MatchField != AttachmentMatchSource {
 		t.Fatalf("expected upload matching to use source ip, got %#v", execution.Rules[0])
 	}
 }
@@ -53,7 +53,7 @@ func TestBuildDirectAttachmentExecutionSupportsIPv6IP(t *testing.T) {
 	execution, err := BuildDirectAttachmentExecution(binding, Scope{
 		Device:    "eth0",
 		Direction: DirectionUpload,
-	}, "1:2a")
+	}, limiter.DesiredModeLimit, "1:2a")
 	if err != nil {
 		t.Fatalf("expected ipv6 direct attachment execution construction to succeed, got %v", err)
 	}
@@ -88,7 +88,7 @@ func TestBuildDirectAttachmentExecutionAcceptsIPv4MappedIPv6(t *testing.T) {
 	execution, err := BuildDirectAttachmentExecution(binding, Scope{
 		Device:    "eth0",
 		Direction: DirectionUpload,
-	}, "1:2a")
+	}, limiter.DesiredModeLimit, "1:2a")
 	if err != nil {
 		t.Fatalf("expected mapped ip direct attachment execution construction to succeed, got %v", err)
 	}
@@ -120,7 +120,7 @@ func TestBuildDirectAttachmentExecutionCanonicalizesEquivalentIPv6ForDeterminist
 		execution, err := BuildDirectAttachmentExecution(binding, Scope{
 			Device:    "eth0",
 			Direction: DirectionUpload,
-		}, "1:2a")
+		}, limiter.DesiredModeLimit, "1:2a")
 		if err != nil {
 			t.Fatalf("expected ipv6 direct attachment execution construction for %q to succeed, got %v", value, err)
 		}
@@ -157,7 +157,7 @@ func TestBuildDirectAttachmentExecutionCanonicalizesMappedIPv4ForDeterministicRu
 		execution, err := BuildDirectAttachmentExecution(binding, Scope{
 			Device:    "eth0",
 			Direction: DirectionUpload,
-		}, "1:2a")
+		}, limiter.DesiredModeLimit, "1:2a")
 		if err != nil {
 			t.Fatalf("expected direct attachment execution construction for %q to succeed, got %v", value, err)
 		}
@@ -175,9 +175,60 @@ func TestBuildDirectAttachmentExecutionCanonicalizesMappedIPv4ForDeterministicRu
 	}
 }
 
+func TestBuildDirectAttachmentExecutionForIPUnlimited(t *testing.T) {
+	subject := bindingTestSubject(t, policy.TargetKindIP)
+	binding, err := BindSubject(subject)
+	if err != nil {
+		t.Fatalf("expected ip binding to succeed, got %v", err)
+	}
+
+	execution, err := BuildDirectAttachmentExecution(binding, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	}, limiter.DesiredModeUnlimited, "")
+	if err != nil {
+		t.Fatalf("expected unlimited direct attachment execution construction to succeed, got %v", err)
+	}
+
+	if execution.Readiness != BindingReadinessReady || len(execution.Rules) != 1 {
+		t.Fatalf("expected ready unlimited direct attachment execution, got %#v", execution)
+	}
+	if execution.Rules[0].Disposition != DirectAttachmentDispositionPass || execution.Rules[0].ClassID != "" {
+		t.Fatalf("expected pass-through unlimited rule, got %#v", execution.Rules[0])
+	}
+}
+
+func TestBuildDirectAttachmentExecutionForIPBaselineAll(t *testing.T) {
+	subject := limiter.Subject{
+		Kind: policy.TargetKindIP,
+		All:  true,
+		Binding: limiter.RuntimeBinding{
+			Runtime: bindingTestSession().Runtime,
+		},
+	}
+	binding, err := BindSubject(subject)
+	if err != nil {
+		t.Fatalf("expected ip baseline binding to succeed, got %v", err)
+	}
+
+	execution, err := BuildDirectAttachmentExecution(binding, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	}, limiter.DesiredModeLimit, "1:2a")
+	if err != nil {
+		t.Fatalf("expected baseline direct attachment execution construction to succeed, got %v", err)
+	}
+
+	if execution.Readiness != BindingReadinessReady || len(execution.Rules) != 1 {
+		t.Fatalf("expected ready baseline direct attachment execution, got %#v", execution)
+	}
+	if execution.Rules[0].Classifier != DirectAttachmentClassifierMatchAll || execution.Rules[0].Identity.Kind != IdentityKindAllClientIP {
+		t.Fatalf("expected matchall baseline rule, got %#v", execution.Rules[0])
+	}
+}
+
 func TestBuildDirectAttachmentExecutionReportsUnavailableForNonIPKinds(t *testing.T) {
 	tests := []policy.TargetKind{
-		policy.TargetKindConnection,
 		policy.TargetKindInbound,
 		policy.TargetKindOutbound,
 	}
@@ -193,7 +244,7 @@ func TestBuildDirectAttachmentExecutionReportsUnavailableForNonIPKinds(t *testin
 			execution, err := BuildDirectAttachmentExecution(binding, Scope{
 				Device:    "eth0",
 				Direction: DirectionUpload,
-			}, "1:2a")
+			}, limiter.DesiredModeLimit, "1:2a")
 			if err != nil {
 				t.Fatalf("expected %s direct attachment execution construction to succeed, got %v", kind, err)
 			}
@@ -205,10 +256,6 @@ func TestBuildDirectAttachmentExecutionReportsUnavailableForNonIPKinds(t *testin
 				t.Fatalf("expected no direct attachment rules, got %#v", execution)
 			}
 			switch kind {
-			case policy.TargetKindConnection:
-				if !strings.Contains(execution.Reason, "connection session ids") {
-					t.Fatalf("expected connection execution reason, got %#v", execution)
-				}
 			case policy.TargetKindInbound:
 				if !strings.Contains(execution.Reason, "mark-backed") {
 					t.Fatalf("expected inbound execution reason, got %#v", execution)
@@ -304,6 +351,7 @@ func TestAppendObservedDirectAttachmentCleanupDropsClassDeleteWhenClassIsAlready
 		Kind:    limiter.ActionRemove,
 		Subject: desired.Subject,
 		Applied: []limiter.AppliedState{{
+			Mode:      limiter.DesiredModeLimit,
 			Subject:   desired.Subject,
 			Limits:    desired.Limits,
 			Driver:    "tc",
@@ -334,11 +382,11 @@ func TestAppendObservedDirectAttachmentCleanupDropsClassDeleteWhenClassIsAlready
 		t.Fatalf("expected observed direct attachment cleanup to succeed, got %v", err)
 	}
 
-	if len(updated.Steps) != 1 {
-		t.Fatalf("expected attachment-only cleanup step when the class is already gone, got %#v", updated.Steps)
+	if len(updated.Steps) != 2 {
+		t.Fatalf("expected attachment-only cleanup steps when the class is already gone, got %#v", updated.Steps)
 	}
-	if updated.Steps[0].Name != "delete-direct-attachment-1" {
-		t.Fatalf("expected direct attachment cleanup step only, got %#v", updated.Steps)
+	if updated.Steps[0].Name != "delete-direct-attachment-1" || updated.Steps[1].Name != "delete-direct-attachment-2" {
+		t.Fatalf("expected direct attachment cleanup steps only, got %#v", updated.Steps)
 	}
 }
 

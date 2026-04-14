@@ -1,0 +1,71 @@
+# Command Usage
+
+RayLimit exposes a small public CLI:
+
+- `discover`
+- `inspect`
+- `limit`
+- `version`
+
+That small surface is intentional. The product depth comes from the decision model and the backend evidence, not from a long list of commands.
+
+## Recommended Operator Order
+
+The normal order is:
+
+1. `discover`
+2. `inspect`
+3. `limit`
+
+`version` is informational and can be used anywhere.
+
+## Output Formats
+
+The command surface consistently supports `text` and `json` where structured output matters:
+
+- `discover --format text|json`
+- `inspect --format text|json`
+- `limit --format text|json`
+
+Text is optimized for terminal reading. JSON is optimized for tooling, logs, and automation.
+
+## Common Prefixes
+
+Installed path:
+
+```bash
+raylimit ...
+```
+
+Direct source path:
+
+```bash
+go run ./cmd/raylimit ...
+```
+
+Built binary path:
+
+```bash
+./bin/raylimit ...
+```
+
+The command behavior is the same. Only the launch path changes.
+
+## How To Read `limit` Output
+
+The `limit` report is the heart of the CLI. In text mode it is organized around:
+
+- `Requested state`
+- `Observation`
+- `Decision`
+- `Plan`
+- `Execution`
+- `Outcome`
+
+If you are new to RayLimit, learn that report before you trust live execution.
+
+## Commands In This Section
+
+- [discover](/commands/discover) lists runtime targets
+- [inspect](/commands/inspect) explains runtime metadata and capability hints
+- [limit](/commands/limit) documents planning, execution, remove, no-op, replace, and the supported limiter families

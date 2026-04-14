@@ -234,7 +234,7 @@ func (e MarkAttachmentExecution) Validate() error {
 		return fmt.Errorf("invalid mark attachment execution identity: %w", err)
 	}
 	switch e.Identity.Kind {
-	case IdentityKindInbound, IdentityKindOutbound, IdentityKindUUIDRouting:
+	case IdentityKindInbound, IdentityKindOutbound:
 	default:
 		return fmt.Errorf("mark attachment execution does not support identity kind %q", e.Identity.Kind)
 	}
@@ -330,9 +330,9 @@ func BuildMarkAttachmentExecution(input MarkAttachmentInput) (MarkAttachmentExec
 	}
 
 	switch input.Identity.Kind {
-	case IdentityKindInbound, IdentityKindOutbound, IdentityKindUUIDRouting:
+	case IdentityKindInbound, IdentityKindOutbound:
 	default:
-		execution.Reason = "mark-backed attachment currently requires an inbound-tag, outbound-tag, or uuid-routing identity"
+		execution.Reason = "mark-backed attachment currently requires an inbound-tag or outbound-tag identity"
 		if err := execution.Validate(); err != nil {
 			return MarkAttachmentExecution{}, err
 		}
@@ -429,8 +429,6 @@ func BuildMarkAttachmentExecution(input MarkAttachmentInput) (MarkAttachmentExec
 		execution.Reason = "nftables input marking plus output mark restoration and tc fw classification target the selected inbound class"
 	} else if input.Identity.Kind == IdentityKindOutbound {
 		execution.Reason = "nftables output matching on the selected outbound socket mark plus tc fw classification target the selected outbound class"
-	} else if input.Identity.Kind == IdentityKindUUIDRouting {
-		execution.Reason = "nftables output matching on the live RoutingService-derived socket tuple plus tc fw classification target the selected shared uuid class"
 	}
 	if err := execution.Validate(); err != nil {
 		return MarkAttachmentExecution{}, err
@@ -456,8 +454,6 @@ func defaultMarkAttachmentChainHook(kind IdentityKind) string {
 	case IdentityKindInbound:
 		return "input"
 	case IdentityKindOutbound:
-		return "output"
-	case IdentityKindUUIDRouting:
 		return "output"
 	default:
 		return ""
@@ -601,7 +597,7 @@ func ObserveMarkAttachment(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, ex
 }
 
 // AppendMarkAttachmentApply appends the missing managed nftables and tc fw
-// steps to an existing non-UUID plan.
+// steps to an existing plan.
 func AppendMarkAttachmentApply(plan Plan, tcSnapshot Snapshot, nftSnapshot NftablesSnapshot) (Plan, error) {
 	if err := plan.Validate(); err != nil {
 		return Plan{}, err
@@ -729,7 +725,7 @@ func AppendMarkAttachmentApply(plan Plan, tcSnapshot Snapshot, nftSnapshot Nftab
 }
 
 // AppendMarkAttachmentRemove prepends observed managed nftables and tc fw
-// cleanup steps to an existing non-UUID remove plan.
+// cleanup steps to an existing remove plan.
 func AppendMarkAttachmentRemove(plan Plan, tcSnapshot Snapshot, nftSnapshot NftablesSnapshot) (Plan, error) {
 	if err := plan.Validate(); err != nil {
 		return Plan{}, err

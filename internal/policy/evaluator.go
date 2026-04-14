@@ -105,10 +105,38 @@ func (e Evaluation) HasCoexistence() bool {
 	return len(e.Matches) > 1 || len(e.NonWinningPolicies()) != 0 || len(e.WinningPolicies()) > 1
 }
 
+type selectionRank struct {
+	precedence  int
+	specificity int
+}
+
+func targetSelectionRank(target Target) selectionRank {
+	return selectionRank{
+		precedence:  target.Kind.Precedence(),
+		specificity: target.specificity(),
+	}
+}
+
+func (r selectionRank) compare(other selectionRank) int {
+	switch {
+	case r.precedence > other.precedence:
+		return 1
+	case r.precedence < other.precedence:
+		return -1
+	case r.specificity > other.specificity:
+		return 1
+	case r.specificity < other.specificity:
+		return -1
+	default:
+		return 0
+	}
+}
+
 func matchAndSelect(policies []Policy, session discovery.Session) ([]Match, Selection, map[int]struct{}, error) {
 	matches := make([]Match, 0, len(policies))
 	winnerIndexes := make(map[int]struct{})
 	var selection Selection
+	var selectedRank selectionRank
 
 	for index, policy := range policies {
 		if err := policy.Validate(); err != nil {
@@ -125,15 +153,17 @@ func matchAndSelect(policies []Policy, session discovery.Session) ([]Match, Sele
 		}
 		matches = append(matches, match)
 
-		precedence := match.Precedence
-		selectedPrecedence := selection.Kind.Precedence()
-		if precedence > selectedPrecedence {
+		rank := targetSelectionRank(policy.Target)
+		switch rank.compare(selectedRank) {
+		case 1:
 			selection = Selection{
 				Kind:       policy.Target.Kind,
-				Precedence: precedence,
+				Precedence: rank.precedence,
+				Target:     policy.Target,
 			}
+			selectedRank = rank
 			clear(winnerIndexes)
-		} else if precedence < selectedPrecedence {
+		case -1:
 			continue
 		}
 
@@ -191,6 +221,11 @@ func effectiveReason(e Evaluation) string {
 	}
 
 	reason := fmt.Sprintf("%s precedence selected the effective rule set", e.Selection.Kind)
+	if e.Selection.Kind == TargetKindIP && !e.Selection.Target.All {
+		if broaderIPBaselines(e.NonWinningPolicies()) != 0 {
+			reason += " over a matching ip all baseline"
+		}
+	}
 	if broader := broaderNonWinningKinds(e.Selection.Kind, e.NonWinningPolicies()); len(broader) != 0 {
 		reason += fmt.Sprintf(" over matching %s rules", joinKindsForReason(broader))
 	}
@@ -258,6 +293,17 @@ func broaderNonWinningKinds(winningKind TargetKind, matches []Match) []string {
 	}
 
 	return kinds
+}
+
+func broaderIPBaselines(matches []Match) int {
+	count := 0
+	for _, match := range matches {
+		if match.Policy.Target.Kind == TargetKindIP && match.Policy.Target.All {
+			count++
+		}
+	}
+
+	return count
 }
 
 func countNonWinningKindMatches(kind TargetKind, matches []Match) int {

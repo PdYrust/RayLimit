@@ -1,0 +1,69 @@
+# Policy And Precedence
+
+RayLimit resolves matching limiter kinds with one deterministic precedence order:
+
+`ip > inbound > outbound`
+
+This order matters whenever more than one limiter identity could plausibly describe the same live traffic.
+
+## Cross-Family Precedence
+
+If multiple kinds match the same live session, RayLimit keeps the highest-precedence kind only. Lower-precedence kinds remain non-winning for that evaluation.
+
+That means:
+
+- IP wins over inbound
+- inbound wins over outbound
+
+In operator terms, the most specific packet-facing subject currently available is preferred over broader or more indirect identities.
+
+## What This Means In Practice
+
+Consider a runtime where:
+
+- one IP baseline is present
+- one specific IP override is present
+- one inbound limit is also relevant
+
+For traffic that matches the specific IP:
+
+- the specific IP state wins over the IP baseline
+- IP as a family still wins over inbound
+
+For traffic that does not match the specific IP but still belongs to that runtime:
+
+- the IP baseline can remain effective
+- inbound remains lower precedence
+
+## IP Baseline Versus Specific IP
+
+Inside the IP family, specificity matters:
+
+- `--ip all` is the runtime-local baseline
+- a specific IP rule overrides that baseline
+
+If a specific IP limit and an `all` baseline both match, the specific IP limit becomes effective. If a specific IP unlimited rule matches, it becomes the effective exception over the baseline.
+
+This is deliberate model behavior, not a side effect of generic limit merging.
+
+## Exclude And Limit Resolution
+
+At one specificity level:
+
+- exclude rules suppress limit rules
+- multiple winning limit rules merge by taking the tightest per-direction limit
+
+That evaluator behavior matters for how RayLimit reasons about the effective state. It is not the same thing as the IP baseline-plus-override model, which is explicit.
+
+## Operator Mental Model
+
+The safest way to reason about precedence is:
+
+1. identify the winning family
+2. identify the winning specificity inside IP when relevant
+3. apply exclude-versus-limit logic at that winning level
+4. reconcile the resulting desired state against what the host currently has
+
+## What The CLI Surface Does And Does Not Expose
+
+The `limit` command still operates on one explicit runtime-local target per invocation. Precedence mostly matters when managed states coexist over time and RayLimit needs a deterministic way to explain which subject is effective for the selected session and why.

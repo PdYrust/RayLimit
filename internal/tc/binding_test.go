@@ -17,9 +17,6 @@ func bindingTestSession() discovery.Session {
 			HostPID: 4242,
 			Name:    "edge-a",
 		},
-		Policy: discovery.SessionPolicyIdentity{
-			UUID: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-		},
 		Client: discovery.SessionClient{
 			IP: "203.0.113.10",
 		},
@@ -39,31 +36,6 @@ func bindingTestSubject(t *testing.T, kind policy.TargetKind) limiter.Subject {
 	}
 
 	return subject
-}
-
-func TestBindSubjectConnection(t *testing.T) {
-	subject := bindingTestSubject(t, policy.TargetKindConnection)
-
-	binding, err := BindSubject(subject)
-	if err != nil {
-		t.Fatalf("expected connection binding to succeed, got %v", err)
-	}
-
-	if binding.Readiness != BindingReadinessPartial {
-		t.Fatalf("expected partial connection readiness, got %q", binding.Readiness)
-	}
-	if binding.Confidence != BindingConfidenceMedium {
-		t.Fatalf("expected medium connection confidence, got %q", binding.Confidence)
-	}
-	if binding.Identity == nil || binding.Identity.Kind != IdentityKindSession || binding.Identity.Value != "conn-1" {
-		t.Fatalf("expected session traffic identity, got %#v", binding.Identity)
-	}
-	if !binding.RequestedSubject.Equal(binding.EffectiveSubject) {
-		t.Fatalf("expected direct binding subjects to match, got %#v", binding)
-	}
-	if !strings.Contains(binding.Reason, "session-scoped") && !strings.Contains(binding.Reason, "class-oriented") {
-		t.Fatalf("expected connection binding reason to describe the current class-oriented scope, got %q", binding.Reason)
-	}
 }
 
 func TestBindSubjectIP(t *testing.T) {
@@ -148,60 +120,5 @@ func TestBindSubjectInboundAndOutbound(t *testing.T) {
 				t.Fatalf("expected %s binding reason to describe the socket-mark selector requirement, got %q", test.kind, binding.Reason)
 			}
 		})
-	}
-}
-
-func TestBindSubjectUUIDReportsUnavailableBinding(t *testing.T) {
-	subject := bindingTestSubject(t, policy.TargetKindUUID)
-
-	binding, err := BindSubject(subject)
-	if err != nil {
-		t.Fatalf("expected uuid binding to succeed, got %v", err)
-	}
-
-	if binding.Readiness != BindingReadinessUnavailable {
-		t.Fatalf("expected unavailable binding readiness, got %q", binding.Readiness)
-	}
-	if binding.Identity != nil {
-		t.Fatalf("expected uuid binding to avoid traffic identity, got %#v", binding.Identity)
-	}
-}
-
-func TestBindUUIDSessionBridge(t *testing.T) {
-	session := bindingTestSession()
-	requested, err := limiter.SubjectFromSession(policy.TargetKindUUID, session)
-	if err != nil {
-		t.Fatalf("expected uuid subject construction to succeed, got %v", err)
-	}
-
-	binding, err := BindUUIDSessionBridge(requested, session)
-	if err != nil {
-		t.Fatalf("expected uuid bridge binding to succeed, got %v", err)
-	}
-
-	if binding.RequestedSubject.Kind != policy.TargetKindUUID {
-		t.Fatalf("expected uuid requested subject, got %#v", binding.RequestedSubject)
-	}
-	if binding.EffectiveSubject.Kind != policy.TargetKindConnection {
-		t.Fatalf("expected bridged connection subject, got %#v", binding.EffectiveSubject)
-	}
-	if binding.Identity == nil || binding.Identity.Kind != IdentityKindSession || binding.Identity.Value != session.ID {
-		t.Fatalf("expected session identity, got %#v", binding.Identity)
-	}
-	if binding.Readiness != BindingReadinessPartial {
-		t.Fatalf("expected partial bridge readiness, got %q", binding.Readiness)
-	}
-}
-
-func TestBindUUIDSessionBridgeRejectsInsufficientEvidence(t *testing.T) {
-	session := bindingTestSession()
-	requested, err := limiter.SubjectFromSession(policy.TargetKindUUID, session)
-	if err != nil {
-		t.Fatalf("expected uuid subject construction to succeed, got %v", err)
-	}
-
-	session.Policy.UUID = "other-user"
-	if _, err := BindUUIDSessionBridge(requested, session); err == nil {
-		t.Fatal("expected mismatched uuid bridge to fail")
 	}
 }

@@ -1,0 +1,207 @@
+# IP
+
+The IP limiter is the most direct packet-facing limiter in RayLimit. It is also the richest family in the current product because it supports a runtime-local baseline plus specific overrides and specific unlimited exceptions.
+
+## When To Use IP
+
+Choose the IP limiter when visible client IP is the identity you actually want to control:
+
+- direct client-facing runtimes
+- simple edge topologies
+- environments where the client address is the stable operational boundary
+
+Prefer `inbound` or `outbound` when the listener path or egress route is more meaningful than the client IP itself.
+
+## The Three Supported IP Behaviors
+
+RayLimit supports three explicit runtime-local IP behaviors:
+
+- `--ip all --rate ...` for one baseline that applies to all visible client IPs on the selected runtime
+- `--ip <ip> --rate ...` for one specific per-IP override
+- `--ip <ip> --unlimited` for one specific no-limit exception
+
+`all` is a runtime-local baseline, not a synthetic single-IP subject and not a host-global default.
+
+## What `all` Means
+
+`--ip all` means:
+
+- all visible client IPs for the selected runtime
+- on the selected device
+- for the selected direction
+
+It does not mean:
+
+- all runtimes on the host
+- all devices on the host
+- both directions at once
+- a generic catch-all outside the selected runtime boundary
+
+If you want both directions, run both directions explicitly:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction download --rate 4096
+```
+
+## How Specific Override Works
+
+A specific `--ip <ip> --rate ...` rule creates a concrete subject for that address on the selected runtime.
+
+When both the baseline and a specific IP limit match:
+
+- the specific IP rule wins over `all`
+- the specific rate becomes the effective state for that address
+- the baseline still applies to every other IP on that runtime and direction
+
+This is not a hack built on “tightest merge” semantics. The baseline and the specific rule are separate, explicit states with explicit precedence.
+
+## How Unlimited Works
+
+A specific `--ip <ip> --unlimited` rule creates a no-limit exception for that address.
+
+When the unlimited exception and the baseline both match:
+
+- the specific IP exception wins
+- the selected IP bypasses the baseline for that direction
+- the baseline still applies to every other IP on that runtime and direction
+
+`--unlimited` is valid only with a specific IP target. It cannot be combined with:
+
+- `--ip all`
+- `--rate`
+- `--remove`
+
+## Runtime-Local Scope
+
+The IP model is always runtime-local:
+
+- one runtime plus `--ip all` equals one baseline
+- the same `--ip all` on another runtime is a different baseline
+- one specific IP on one runtime is not the same subject as the same IP on another runtime
+
+This matters for both apply and cleanup. RayLimit does not treat the IP model as host-global state.
+
+## Address Handling And Canonicalization
+
+The current direct attachment path supports:
+
+- IPv4
+- IPv4-mapped IPv6 after canonicalization to IPv4 where appropriate
+- native IPv6 within the current `u32` backend assumption of no IPv6 extension headers for specific-IP matching
+
+Canonical-equivalent inputs map to the same specific IP identity after normalization. That keeps repeated commands consistent even when the textual form changes.
+
+## Concrete Backend Path
+
+IP is concrete because RayLimit can build direct `tc` attachment rules:
+
+- the baseline uses a runtime-local `matchall` attachment
+- a specific rate override uses a direct client-IP classify rule
+- a specific unlimited exception uses a direct client-IP pass rule
+
+This is the clearest concrete execution path in the current product.
+
+## Apply, No-Op, Replace, And Remove
+
+The IP family participates fully in RayLimit’s reconcile model:
+
+- a missing baseline or specific rule can produce `apply`
+- a matching baseline or specific rule can produce `no_op`
+- a mismatched class or missing expected attachment can produce `replace`
+- explicit managed state without a desired state can produce `remove`
+
+In practical terms, `replace` is the reapply path. It means the selected subject already has managed state, but that state is not correct enough to keep.
+
+## Remove Semantics In The IP Model
+
+Removing a specific IP rule removes only that explicit override or unlimited exception. It does not remove the baseline unless you remove `--ip all` itself.
+
+Examples:
+
+Remove one specific override or specific unlimited rule:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
+```
+
+Remove the runtime-local baseline:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
+```
+
+Specific-IP remove is intentionally conservative. It targets the explicit specific-IP rule forms for that subject rather than collapsing the entire runtime-local baseline.
+
+## Precedence Inside IP And Against Other Families
+
+Inside IP:
+
+- a specific IP rule overrides the `all` baseline
+- a specific unlimited rule overrides the baseline as an exception
+
+Across families:
+
+`ip > inbound > outbound`
+
+That means IP is the highest-precedence family when the same live session could otherwise match more than one family.
+
+## Practical Commands
+
+Preview a baseline:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+```
+
+Preview a specific override:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
+```
+
+Preview a specific unlimited exception:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+```
+
+Preview an IPv6-specific override:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 2001:db8::10 --device eth0 --direction download --rate 4096
+```
+
+Preview in JSON:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096 --format json
+```
+
+Execute a specific override:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048 --execute
+```
+
+Remove the specific rule only:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
+```
+
+Remove the baseline:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove --execute
+```
+
+## When Not To Use IP
+
+Avoid IP as the primary control surface when:
+
+- the real boundary is the inbound listener rather than the client address
+- the real boundary is the outbound route rather than the client address
+- you cannot reason confidently about what the runtime sees as the visible client IP
+
+When those conditions matter more than direct client identity, use `inbound` or `outbound` instead.

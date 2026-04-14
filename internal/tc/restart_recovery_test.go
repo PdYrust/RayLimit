@@ -12,9 +12,9 @@ func testRestartRecoveryInventory(t *testing.T, observed ...ManagedObject) Manag
 	t.Helper()
 
 	inventory, err := ClassifyManagedState(
-		ManagedStateSet{OwnerKey: "host_process|xray|edge-a|4242||uuid|user-a"},
+		ManagedStateSet{OwnerKey: "host_process|xray|edge-a|4242||inbound|api-in"},
 		ManagedStateSet{
-			OwnerKey: "host_process|xray|edge-a|4242||uuid|user-a",
+			OwnerKey: "host_process|xray|edge-a|4242||inbound|api-in",
 			Objects:  append([]ManagedObject(nil), observed...),
 		},
 	)
@@ -33,7 +33,7 @@ func TestRestartRecovererRecoversConcreteObservedStateWithoutRuntimeEvidence(t *
 			Objects: []ManagedObject{
 				testPeriodicReconcileObject(ManagedObjectRootQDisc, "1:", false, false, true),
 				testPeriodicReconcileObject(ManagedObjectClass, "1:1001", false, false, false),
-				testPeriodicReconcileObject(ManagedObjectDirectAttachmentFilter, "1:|1:1001|ip|49153", false, false, false),
+				testPeriodicReconcileObject(ManagedObjectDirectAttachmentFilter, "1:|u32|ip|49153|1:1001", false, false, false),
 			},
 		},
 	)
@@ -58,7 +58,7 @@ func TestRestartRecovererRequiresRefreshForRuntimeDerivedStateWithoutCachedEvide
 	inventory := testRestartRecoveryInventory(
 		t,
 		testPeriodicReconcileObject(ManagedObjectRootQDisc, "1:", true, false, true),
-		testPeriodicReconcileObject(ManagedObjectUUIDAggregateClass, "1:2001", true, false, false),
+		testPeriodicReconcileObject(ManagedObjectMarkAttachmentTable, "inet|raylimit_eth0_upload", true, false, false),
 	)
 
 	result, err := (RestartRecoverer{}).Decide(RestartRecoveryInput{Inventory: inventory})
@@ -78,14 +78,14 @@ func TestRestartRecovererKeepsRuntimeDerivedStateRecoverableWhenEvidenceIsStable
 	inventory := testRestartRecoveryInventory(
 		t,
 		testPeriodicReconcileObject(ManagedObjectRootQDisc, "1:", true, false, true),
-		testPeriodicReconcileObject(ManagedObjectUUIDAggregateClass, "1:2001", true, false, false),
+		testPeriodicReconcileObject(ManagedObjectMarkAttachmentTable, "inet|raylimit_eth0_upload", true, false, false),
 	)
 
 	result, err := (RestartRecoverer{}).Decide(RestartRecoveryInput{
 		Inventory: inventory,
 		RuntimeEvidence: &discovery.RuntimeEvidenceChurnDecision{
 			Action: discovery.RuntimeEvidenceChurnActionStable,
-			Reason: "fresh runtime evidence still sees the uuid owner",
+			Reason: "fresh runtime evidence still sees the owner",
 		},
 	})
 	if err != nil {

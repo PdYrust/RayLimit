@@ -1,0 +1,61 @@
+# Inbound And Outbound Scenarios
+
+Inbound and outbound share the same outer workflow, but their concrete execution depends on readable runtime configuration.
+
+## Shared Preparation
+
+Inspect the runtime first:
+
+```bash
+sudo raylimit inspect --pid 1234
+```
+
+This is especially important for the configuration-derived families because it confirms that you are evaluating the correct runtime before selector derivation begins.
+
+## Inbound Scenario
+
+Preview first:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048
+```
+
+Execute only when the report shows a concrete listener-qualified path:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048 --execute
+```
+
+Validate cleanup separately:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --remove
+```
+
+## Outbound Scenario
+
+Preview first:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048
+```
+
+Execute only when the report shows one concrete non-zero mark-backed path:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048 --execute
+```
+
+Validate cleanup separately:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --remove
+```
+
+## What To Watch For
+
+- blocked selector derivation
+- unreadable runtime configuration
+- ambiguous listener or mark evidence
+- host state that is not comparable enough for safe live mutation
+- a no-op result when the selected managed state is already correct

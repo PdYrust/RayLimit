@@ -1,0 +1,74 @@
+# Runtime Targeting
+
+Everything in RayLimit starts with selecting one runtime target. If runtime selection is weak, everything after it becomes weak.
+
+## Supported Runtime Selectors
+
+The public CLI supports these runtime selectors:
+
+- `--pid <pid>`
+- `--container <id-or-name>`
+- `--name <name>`
+- optional `--source host_process|docker_container`
+
+For `limit`, exactly one runtime must be selected. For `inspect`, you can also use `--all` to inspect every matching target.
+
+## What Runtime-Local Means
+
+Runtime locality is part of the product contract:
+
+- one runtime plus one subject equals one limiter identity
+- another runtime gets a different identity even if the tag or IP string is the same
+- observation, reconcile, and cleanup all stay inside that runtime boundary
+
+That matters directly for the IP model. `--ip all` is a baseline for one selected runtime only. It is not a host-global default and it does not automatically cover other runtimes on the same host.
+
+## Selection Rules That Matter In Practice
+
+- `inspect` can run without selectors and show every discovered target
+- `limit` requires exactly one runtime
+- `--pid` and `--container` cannot be combined
+- `--source=docker_container` cannot be used with `--pid`
+- `--source=host_process` cannot be used with `--container`
+
+If you match multiple runtimes with `inspect` and do not pass `--all`, RayLimit stops and asks you to refine the selection instead of choosing one silently.
+
+## Common Selection Patterns
+
+Select one host process:
+
+```bash
+sudo raylimit inspect --pid 1234
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+```
+
+Select one Docker runtime:
+
+```bash
+sudo raylimit inspect --source docker_container --container xray-edge
+sudo raylimit limit --source docker_container --container xray-edge --outbound proxy-out --device eth0 --direction upload --rate 2048
+```
+
+Select by discovered name:
+
+```bash
+sudo raylimit inspect --name edge-eu
+sudo raylimit limit --name edge-eu --inbound api-in --device eth0 --direction upload --rate 2048
+```
+
+Inspect every runtime from one discovery source:
+
+```bash
+sudo raylimit inspect --source host_process --all
+```
+
+## Why Selection Discipline Matters
+
+If runtime selection is ambiguous:
+
+- the limiter subject changes
+- the runtime evidence source changes
+- the managed owner identity changes
+- the cleanup target changes
+
+For that reason, RayLimit validates runtime selection early instead of continuing with a weak target identity.

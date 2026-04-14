@@ -15,9 +15,6 @@ func testSession() discovery.Session {
 			HostPID: 4242,
 			Name:    "edge-a",
 		},
-		Policy: discovery.SessionPolicyIdentity{
-			UUID: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-		},
 		Client: discovery.SessionClient{
 			IP: "203.0.113.10",
 		},
@@ -28,23 +25,11 @@ func testSession() discovery.Session {
 	}
 }
 
-func testConnectionRef() *ConnectionRef {
-	return &ConnectionRef{
-		SessionID: "conn-1",
-		Runtime: &discovery.SessionRuntime{
-			Source:  discovery.DiscoverySourceHostProcess,
-			HostPID: 4242,
-		},
-	}
-}
-
 func TestTargetKindValid(t *testing.T) {
 	for _, kind := range []TargetKind{
-		TargetKindUUID,
 		TargetKindIP,
 		TargetKindInbound,
 		TargetKindOutbound,
-		TargetKindConnection,
 	} {
 		if !kind.Valid() {
 			t.Fatalf("expected target kind %q to be valid", kind)
@@ -53,12 +38,6 @@ func TestTargetKindValid(t *testing.T) {
 }
 
 func TestTargetKindPrecedence(t *testing.T) {
-	if TargetKindConnection.Precedence() <= TargetKindUUID.Precedence() {
-		t.Fatal("expected connection precedence to be higher than uuid")
-	}
-	if TargetKindUUID.Precedence() <= TargetKindIP.Precedence() {
-		t.Fatal("expected uuid precedence to be higher than ip")
-	}
 	if TargetKindIP.Precedence() <= TargetKindInbound.Precedence() {
 		t.Fatal("expected ip precedence to be higher than inbound")
 	}
@@ -68,56 +47,51 @@ func TestTargetKindPrecedence(t *testing.T) {
 }
 
 func TestDescribeTargetKindPrecedence(t *testing.T) {
-	if DescribeTargetKindPrecedence() != "connection > uuid > ip > inbound > outbound" {
+	if DescribeTargetKindPrecedence() != "ip > inbound > outbound" {
 		t.Fatalf("unexpected precedence description %q", DescribeTargetKindPrecedence())
 	}
 }
 
-func TestPolicyValidateUUIDPolicy(t *testing.T) {
-	policy := Policy{
-		Name: "uuid-limit",
-		Target: Target{
-			Kind:  TargetKindUUID,
-			Value: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-		},
-		Limits: LimitPolicy{
-			Upload: &RateLimit{BytesPerSecond: 1024},
-		},
-	}
-
-	if err := policy.Validate(); err != nil {
-		t.Fatalf("expected uuid policy to validate, got %v", err)
-	}
-}
-
-func TestPolicyValidateIPInboundAndOutboundTargets(t *testing.T) {
+func TestPolicyValidateSupportedTargets(t *testing.T) {
 	policies := []Policy{
 		{
+			Name: "ip-limit",
 			Target: Target{
 				Kind:  TargetKindIP,
 				Value: "203.0.113.10",
 			},
 			Limits: LimitPolicy{
-				Download: &RateLimit{BytesPerSecond: 4096},
+				Upload: &RateLimit{BytesPerSecond: 1024},
 			},
 		},
 		{
+			Name: "ip-all-limit",
+			Target: Target{
+				Kind: TargetKindIP,
+				All:  true,
+			},
+			Limits: LimitPolicy{
+				Download: &RateLimit{BytesPerSecond: 1536},
+			},
+		},
+		{
+			Name: "inbound-limit",
 			Target: Target{
 				Kind:  TargetKindInbound,
 				Value: "api-in",
 			},
 			Limits: LimitPolicy{
-				Upload:   &RateLimit{BytesPerSecond: 2048},
 				Download: &RateLimit{BytesPerSecond: 2048},
 			},
 		},
 		{
+			Name: "outbound-limit",
 			Target: Target{
 				Kind:  TargetKindOutbound,
 				Value: "direct",
 			},
 			Limits: LimitPolicy{
-				Download: &RateLimit{BytesPerSecond: 8192},
+				Download: &RateLimit{BytesPerSecond: 4096},
 			},
 		},
 	}
@@ -129,43 +103,14 @@ func TestPolicyValidateIPInboundAndOutboundTargets(t *testing.T) {
 	}
 }
 
-func TestPolicyValidateConnectionTargetedPolicy(t *testing.T) {
-	policy := Policy{
-		Target: Target{
-			Kind:       TargetKindConnection,
-			Connection: testConnectionRef(),
-		},
-		Limits: LimitPolicy{
-			Upload:   &RateLimit{BytesPerSecond: 1024},
-			Download: &RateLimit{BytesPerSecond: 2048},
-		},
-	}
-
-	if err := policy.Validate(); err != nil {
-		t.Fatalf("expected connection policy to validate, got %v", err)
-	}
-
-	session := testSession()
-
-	if !policy.Target.MatchesSession(session) {
-		t.Fatalf("expected connection target to match session, got %#v", session)
-	}
-}
-
 func TestPolicyValidateRejectsIncompleteDefinitions(t *testing.T) {
 	policies := []Policy{
 		{
 			Target: Target{
-				Kind: TargetKindUUID,
+				Kind: TargetKindIP,
 			},
 			Limits: LimitPolicy{
 				Upload: &RateLimit{BytesPerSecond: 1024},
-			},
-		},
-		{
-			Target: Target{
-				Kind:  TargetKindUUID,
-				Value: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			},
 		},
 		{
@@ -179,20 +124,17 @@ func TestPolicyValidateRejectsIncompleteDefinitions(t *testing.T) {
 		},
 		{
 			Target: Target{
-				Kind: TargetKindConnection,
-				Connection: &ConnectionRef{
-					SessionID: "conn-1",
-				},
+				Kind:  TargetKindIP,
+				All:   true,
+				Value: "203.0.113.10",
 			},
 			Limits: LimitPolicy{
-				Download: &RateLimit{BytesPerSecond: 1024},
+				Upload: &RateLimit{BytesPerSecond: 1024},
 			},
 		},
 		{
-			Name: "   ",
 			Target: Target{
-				Kind:  TargetKindOutbound,
-				Value: "direct",
+				Kind: TargetKindInbound,
 			},
 			Limits: LimitPolicy{
 				Download: &RateLimit{BytesPerSecond: 1024},
@@ -207,48 +149,11 @@ func TestPolicyValidateRejectsIncompleteDefinitions(t *testing.T) {
 	}
 }
 
-func TestLimitPolicyValidateRejectsInvalidRateLimits(t *testing.T) {
-	limits := LimitPolicy{
-		Upload: &RateLimit{BytesPerSecond: 0},
-	}
-
-	err := limits.Validate()
-	if err == nil {
-		t.Fatal("expected invalid rate limit to fail validation")
-	}
-
-	if !strings.Contains(err.Error(), "bytes_per_second must be greater than zero") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestPolicyValidateRejectsExcludePolicyWithLimits(t *testing.T) {
-	policy := Policy{
-		Effect: EffectExclude,
-		Target: Target{
-			Kind:  TargetKindInbound,
-			Value: "api-in",
-		},
-		Limits: LimitPolicy{
-			Upload: &RateLimit{BytesPerSecond: 1024},
-		},
-	}
-
-	err := policy.Validate()
-	if err == nil {
-		t.Fatal("expected exclude policy with limits to fail validation")
-	}
-
-	if !strings.Contains(err.Error(), "exclude policy cannot define limits") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestTargetMatchesSessionAcrossSupportedIdentityKinds(t *testing.T) {
+func TestTargetMatchesSessionAcrossSupportedKinds(t *testing.T) {
 	session := testSession()
 
 	targets := []Target{
-		{Kind: TargetKindUUID, Value: "F47AC10B-58CC-4372-A567-0E02B2C3D479"},
+		{Kind: TargetKindIP, All: true},
 		{Kind: TargetKindIP, Value: "203.0.113.10"},
 		{Kind: TargetKindInbound, Value: "api-in"},
 		{Kind: TargetKindOutbound, Value: "direct"},
@@ -261,28 +166,8 @@ func TestTargetMatchesSessionAcrossSupportedIdentityKinds(t *testing.T) {
 	}
 }
 
-func TestIPTargetMatchesSessionAcrossCanonicalForms(t *testing.T) {
-	session := testSession()
-	session.Client.IP = "2001:db8::10"
-
-	targets := []Target{
-		{Kind: TargetKindIP, Value: "2001:0db8::0010"},
-		{Kind: TargetKindIP, Value: "::ffff:203.0.113.10"},
-	}
-
-	if !targets[0].MatchesSession(session) {
-		t.Fatalf("expected canonical ipv6 target to match session %+v", session)
-	}
-
-	session.Client.IP = "203.0.113.10"
-	if !targets[1].MatchesSession(session) {
-		t.Fatalf("expected mapped ipv4 target to match session %+v", session)
-	}
-}
-
 func TestResolveReturnsHighestPrecedenceMatch(t *testing.T) {
-	session := testSession()
-	policies := []Policy{
+	selection, err := Resolve([]Policy{
 		{
 			Name: "outbound-limit",
 			Target: Target{
@@ -294,15 +179,43 @@ func TestResolveReturnsHighestPrecedenceMatch(t *testing.T) {
 			},
 		},
 		{
+			Name: "ip-limit",
+			Target: Target{
+				Kind:  TargetKindIP,
+				Value: "203.0.113.10",
+			},
+			Limits: LimitPolicy{
+				Download: &RateLimit{BytesPerSecond: 2048},
+			},
+		},
+		{
 			Name: "inbound-limit",
 			Target: Target{
 				Kind:  TargetKindInbound,
 				Value: "api-in",
 			},
 			Limits: LimitPolicy{
-				Download: &RateLimit{BytesPerSecond: 2048},
+				Download: &RateLimit{BytesPerSecond: 4096},
 			},
 		},
+	}, testSession())
+	if err != nil {
+		t.Fatalf("expected policies to resolve, got %v", err)
+	}
+
+	if selection.Kind != TargetKindIP {
+		t.Fatalf("expected ip precedence to win, got %q", selection.Kind)
+	}
+	if selection.Excluded() {
+		t.Fatalf("expected limiting selection, got %#v", selection)
+	}
+	if len(selection.Limits) != 1 || selection.Limits[0].Name != "ip-limit" {
+		t.Fatalf("unexpected selected policies: %#v", selection)
+	}
+}
+
+func TestResolveExcludeBeatsLimitsAtSamePrecedence(t *testing.T) {
+	selection, err := Resolve([]Policy{
 		{
 			Name: "ip-limit",
 			Target: Target{
@@ -310,133 +223,105 @@ func TestResolveReturnsHighestPrecedenceMatch(t *testing.T) {
 				Value: "203.0.113.10",
 			},
 			Limits: LimitPolicy{
-				Download: &RateLimit{BytesPerSecond: 4096},
-			},
-		},
-		{
-			Name: "uuid-limit",
-			Target: Target{
-				Kind:  TargetKindUUID,
-				Value: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-			},
-			Limits: LimitPolicy{
-				Download: &RateLimit{BytesPerSecond: 8192},
-			},
-		},
-		{
-			Name: "connection-limit",
-			Target: Target{
-				Kind:       TargetKindConnection,
-				Connection: testConnectionRef(),
-			},
-			Limits: LimitPolicy{
-				Download: &RateLimit{BytesPerSecond: 16384},
-			},
-		},
-	}
-
-	selection, err := Resolve(policies, session)
-	if err != nil {
-		t.Fatalf("expected policies to resolve, got %v", err)
-	}
-
-	if selection.Kind != TargetKindConnection {
-		t.Fatalf("expected connection precedence to win, got %q", selection.Kind)
-	}
-	if selection.Excluded() {
-		t.Fatalf("expected connection selection to remain limiting, got %#v", selection)
-	}
-	if len(selection.Limits) != 1 || selection.Limits[0].Name != "connection-limit" {
-		t.Fatalf("unexpected selected policies: %#v", selection)
-	}
-}
-
-func TestResolveExcludeBeatsLimitsAtSamePrecedence(t *testing.T) {
-	session := testSession()
-	policies := []Policy{
-		{
-			Name:   "uuid-limit",
-			Effect: EffectLimit,
-			Target: Target{
-				Kind:  TargetKindUUID,
-				Value: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-			},
-			Limits: LimitPolicy{
 				Upload: &RateLimit{BytesPerSecond: 1024},
 			},
 		},
 		{
-			Name:   "uuid-exclude",
+			Name:   "ip-exclude",
 			Effect: EffectExclude,
 			Target: Target{
-				Kind:  TargetKindUUID,
-				Value: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+				Kind:  TargetKindIP,
+				Value: "203.0.113.10",
 			},
 		},
-	}
-
-	selection, err := Resolve(policies, session)
+	}, testSession())
 	if err != nil {
 		t.Fatalf("expected policies to resolve, got %v", err)
 	}
 
-	if selection.Kind != TargetKindUUID {
-		t.Fatalf("expected uuid precedence, got %q", selection.Kind)
+	if selection.Kind != TargetKindIP {
+		t.Fatalf("expected ip precedence, got %q", selection.Kind)
 	}
 	if !selection.Excluded() {
-		t.Fatalf("expected exclude to short-circuit limits, got %#v", selection)
+		t.Fatalf("expected exclusion to win, got %#v", selection)
 	}
-	if len(selection.Limits) != 0 {
-		t.Fatalf("expected excludes to clear limits, got %#v", selection)
-	}
-	if len(selection.Excludes) != 1 || selection.Excludes[0].Name != "uuid-exclude" {
+	if len(selection.Excludes) != 1 || selection.Excludes[0].Name != "ip-exclude" {
 		t.Fatalf("unexpected exclude selection: %#v", selection)
 	}
 }
 
-func TestResolveHigherPrecedenceLimitBeatsBroaderExclude(t *testing.T) {
-	session := testSession()
-	policies := []Policy{
+func TestResolveSpecificIPBeatsMatchingIPBaseline(t *testing.T) {
+	selection, err := Resolve([]Policy{
 		{
-			Name:   "uuid-exclude",
-			Effect: EffectExclude,
+			Name: "ip-all-limit",
 			Target: Target{
-				Kind:  TargetKindUUID,
-				Value: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+				Kind: TargetKindIP,
+				All:  true,
+			},
+			Limits: LimitPolicy{
+				Upload: &RateLimit{BytesPerSecond: 4096},
 			},
 		},
 		{
-			Name: "connection-limit",
+			Name: "ip-override",
 			Target: Target{
-				Kind:       TargetKindConnection,
-				Connection: testConnectionRef(),
+				Kind:  TargetKindIP,
+				Value: "203.0.113.10",
 			},
 			Limits: LimitPolicy{
 				Upload: &RateLimit{BytesPerSecond: 2048},
 			},
 		},
-	}
-
-	selection, err := Resolve(policies, session)
+	}, testSession())
 	if err != nil {
 		t.Fatalf("expected policies to resolve, got %v", err)
 	}
 
-	if selection.Kind != TargetKindConnection {
-		t.Fatalf("expected connection precedence, got %q", selection.Kind)
+	if selection.Kind != TargetKindIP || selection.Target.All {
+		t.Fatalf("expected specific ip selection to beat the baseline, got %#v", selection)
 	}
-	if selection.Excluded() {
-		t.Fatalf("expected broader exclude to be ignored by higher-precedence match, got %#v", selection)
+	if len(selection.Limits) != 1 || selection.Limits[0].Name != "ip-override" {
+		t.Fatalf("unexpected winning ip override selection: %#v", selection)
 	}
-	if len(selection.Limits) != 1 || selection.Limits[0].Name != "connection-limit" {
-		t.Fatalf("unexpected limit selection: %#v", selection)
+}
+
+func TestResolveSpecificIPExcludeBeatsMatchingIPBaselineLimit(t *testing.T) {
+	selection, err := Resolve([]Policy{
+		{
+			Name: "ip-all-limit",
+			Target: Target{
+				Kind: TargetKindIP,
+				All:  true,
+			},
+			Limits: LimitPolicy{
+				Upload: &RateLimit{BytesPerSecond: 4096},
+			},
+		},
+		{
+			Name:   "ip-unlimited",
+			Effect: EffectExclude,
+			Target: Target{
+				Kind:  TargetKindIP,
+				Value: "203.0.113.10",
+			},
+		},
+	}, testSession())
+	if err != nil {
+		t.Fatalf("expected policies to resolve, got %v", err)
+	}
+
+	if selection.Kind != TargetKindIP || selection.Target.All || !selection.Excluded() {
+		t.Fatalf("expected specific ip exclusion to beat the baseline, got %#v", selection)
+	}
+	if len(selection.Excludes) != 1 || selection.Excludes[0].Name != "ip-unlimited" {
+		t.Fatalf("unexpected winning exclusion selection: %#v", selection)
 	}
 }
 
 func TestResolveRejectsInvalidPolicyDefinitions(t *testing.T) {
-	session := testSession()
-	policies := []Policy{
+	_, err := Resolve([]Policy{
 		{
+			Name: "outbound-limit",
 			Target: Target{
 				Kind:  TargetKindOutbound,
 				Value: "direct",
@@ -447,22 +332,16 @@ func TestResolveRejectsInvalidPolicyDefinitions(t *testing.T) {
 		},
 		{
 			Target: Target{
-				Kind: TargetKindConnection,
-				Connection: &ConnectionRef{
-					SessionID: "conn-1",
-				},
+				Kind: TargetKindInbound,
 			},
 			Limits: LimitPolicy{
 				Upload: &RateLimit{BytesPerSecond: 1024},
 			},
 		},
-	}
-
-	_, err := Resolve(policies, session)
+	}, testSession())
 	if err == nil {
 		t.Fatal("expected invalid policy set to fail resolution")
 	}
-
 	if !strings.Contains(err.Error(), "invalid policy at index 1") {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,0 +1,85 @@
+# Inbound
+
+The inbound limiter shapes traffic selected by one runtime-local inbound tag.
+
+## When To Use Inbound
+
+Choose `inbound` when the listener path is the operational boundary you actually care about:
+
+- one API listener needs its own cap
+- one public entry path needs different treatment from the rest of the runtime
+- client IP alone is not the correct identity
+
+## What It Selects
+
+The subject is one inbound tag inside one runtime target:
+
+- one runtime plus one inbound tag equals one limiter subject
+- the same tag on another runtime is a different subject
+
+Inbound does not support an `all` baseline and does not share the IP family’s override or unlimited model.
+
+## Concrete Execution Requirements
+
+Inbound execution is concrete only when readable runtime configuration proves one concrete TCP listener for the selected tag.
+
+When that proof exists, RayLimit uses:
+
+- `nftables` to classify the listener path
+- `tc fw` to attach that marked traffic to the selected class
+
+## When Execution Stays Blocked
+
+Inbound remains blocked when the selected tag resolves to:
+
+- unreadable configuration
+- ambiguous listener state
+- wildcard-only listener state
+- a non-TCP listener path
+
+Blocked execution is part of the product contract. RayLimit does not guess a weaker selector.
+
+## What The Dry-Run Usually Tells You
+
+For inbound, the dry-run output is especially important because it tells you whether RayLimit could derive a concrete listener-qualified selector or had to stay conservative.
+
+Look at:
+
+- observation notes
+- direct or mark-backed readiness notes
+- the reconcile decision
+- whether execution is blocked
+
+## Practical Commands
+
+Preview the current inbound path:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048
+```
+
+Preview in JSON:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048 --format json
+```
+
+Execute only when the report shows a concrete selector:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048 --execute
+```
+
+Remove the managed inbound state:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --remove
+```
+
+## When Not To Use Inbound
+
+Avoid inbound when:
+
+- the selected tag does not map to one concrete TCP listener
+- readable runtime configuration is not available
+- the real control surface is the client IP or the outbound route rather than the listener path

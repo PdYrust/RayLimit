@@ -1,0 +1,85 @@
+# Outbound
+
+The outbound limiter shapes traffic selected by one runtime-local outbound tag.
+
+## When To Use Outbound
+
+Choose `outbound` when the egress path is the operational boundary you need to control:
+
+- one proxy route needs a cap
+- one exit path should be shaped independently from the rest of the runtime
+- client IP or inbound listener is not the most meaningful identity
+
+## What It Selects
+
+The subject is one outbound tag inside one runtime target:
+
+- one runtime plus one outbound tag equals one limiter subject
+- the same tag on another runtime is a different subject
+
+Outbound does not support an `all` baseline and does not share the IP family’s override or unlimited model.
+
+## Concrete Execution Requirements
+
+Outbound execution is concrete only when readable runtime configuration proves one unique non-zero socket mark for the selected tag without proxy or dialer-proxy indirection.
+
+When that proof exists, RayLimit uses:
+
+- `nftables` output matching
+- `tc fw` attachment for the derived mark-backed path
+
+## When Execution Stays Blocked
+
+Outbound remains blocked when the selected tag depends on:
+
+- unreadable configuration
+- zero or shared marks
+- proxy chaining
+- dialer-proxy indirection
+
+Those states are deliberately conservative because they do not identify one clean egress path.
+
+## What The Dry-Run Usually Tells You
+
+For outbound, the dry-run tells you whether RayLimit could prove one clean mark-backed path or had to stop short because the routing model is too ambiguous.
+
+Pay attention to:
+
+- selector derivation notes
+- execution blocked notes
+- reconcile decision
+- planned commands
+
+## Practical Commands
+
+Dry-run the selected outbound path:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048
+```
+
+Preview in JSON:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048 --format json
+```
+
+Execute only after reviewing the report:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048 --execute
+```
+
+Remove the managed outbound state:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --remove
+```
+
+## When Not To Use Outbound
+
+Avoid outbound when:
+
+- the selected tag does not resolve to one unique non-zero mark
+- the path depends on proxy chaining or dialer-proxy indirection
+- the real control surface is the inbound listener or client IP instead of the egress route

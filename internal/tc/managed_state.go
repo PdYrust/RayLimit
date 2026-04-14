@@ -16,17 +16,15 @@ import (
 type ManagedObjectKind string
 
 const (
-	ManagedObjectRootQDisc                     ManagedObjectKind = "root_qdisc"
-	ManagedObjectClass                         ManagedObjectKind = "class"
-	ManagedObjectDirectAttachmentFilter        ManagedObjectKind = "direct_attachment_filter"
-	ManagedObjectMarkAttachmentTable           ManagedObjectKind = "mark_attachment_table"
-	ManagedObjectMarkAttachmentChain           ManagedObjectKind = "mark_attachment_chain"
-	ManagedObjectMarkAttachmentRestoreChain    ManagedObjectKind = "mark_attachment_restore_chain"
-	ManagedObjectMarkAttachmentRule            ManagedObjectKind = "mark_attachment_rule"
-	ManagedObjectMarkAttachmentRestoreRule     ManagedObjectKind = "mark_attachment_restore_rule"
-	ManagedObjectMarkAttachmentFilter          ManagedObjectKind = "mark_attachment_filter"
-	ManagedObjectUUIDAggregateClass            ManagedObjectKind = "uuid_aggregate_class"
-	ManagedObjectUUIDAggregateAttachmentFilter ManagedObjectKind = "uuid_aggregate_attachment_filter"
+	ManagedObjectRootQDisc                  ManagedObjectKind = "root_qdisc"
+	ManagedObjectClass                      ManagedObjectKind = "class"
+	ManagedObjectDirectAttachmentFilter     ManagedObjectKind = "direct_attachment_filter"
+	ManagedObjectMarkAttachmentTable        ManagedObjectKind = "mark_attachment_table"
+	ManagedObjectMarkAttachmentChain        ManagedObjectKind = "mark_attachment_chain"
+	ManagedObjectMarkAttachmentRestoreChain ManagedObjectKind = "mark_attachment_restore_chain"
+	ManagedObjectMarkAttachmentRule         ManagedObjectKind = "mark_attachment_rule"
+	ManagedObjectMarkAttachmentRestoreRule  ManagedObjectKind = "mark_attachment_restore_rule"
+	ManagedObjectMarkAttachmentFilter       ManagedObjectKind = "mark_attachment_filter"
 )
 
 func (k ManagedObjectKind) Valid() bool {
@@ -39,9 +37,7 @@ func (k ManagedObjectKind) Valid() bool {
 		ManagedObjectMarkAttachmentRestoreChain,
 		ManagedObjectMarkAttachmentRule,
 		ManagedObjectMarkAttachmentRestoreRule,
-		ManagedObjectMarkAttachmentFilter,
-		ManagedObjectUUIDAggregateClass,
-		ManagedObjectUUIDAggregateAttachmentFilter:
+		ManagedObjectMarkAttachmentFilter:
 		return true
 	default:
 		return false
@@ -158,7 +154,7 @@ func (i ManagedStateInventory) Validate() error {
 }
 
 // DesiredManagedState derives the backend objects RayLimit intends to keep
-// after one non-UUID plan succeeds.
+// after one plan succeeds.
 func DesiredManagedState(plan Plan) (ManagedStateSet, error) {
 	if err := plan.Validate(); err != nil {
 		return ManagedStateSet{}, err
@@ -174,10 +170,14 @@ func DesiredManagedState(plan Plan) (ManagedStateSet, error) {
 	retainRequiresRuntimeEvidence := managedRetentionRequiresRuntimeEvidence(plan.Action.Subject.Kind)
 	state.Objects = append(state.Objects,
 		managedRootQDiscObject(plan.Scope, retainRequiresRuntimeEvidence, false),
-		managedClassObject(plan.Scope, plan.Handles.ClassID, retainRequiresRuntimeEvidence, false),
 	)
+	if plan.Action.Desired == nil || plan.Action.Desired.Mode == limiter.DesiredModeLimit {
+		state.Objects = append(state.Objects,
+			managedClassObject(plan.Scope, plan.Handles.ClassID, retainRequiresRuntimeEvidence, false),
+		)
+	}
 	for _, rule := range plan.AttachmentExecution.Rules {
-		state.Objects = append(state.Objects, managedDirectAttachmentObject(plan.Scope, plan.Handles.ClassID, rule, retainRequiresRuntimeEvidence))
+		state.Objects = append(state.Objects, managedDirectAttachmentObject(plan.Scope, rule, retainRequiresRuntimeEvidence))
 	}
 	if plan.MarkAttachment != nil && plan.MarkAttachment.Readiness == BindingReadinessReady {
 		state.Objects = append(state.Objects, managedMarkAttachmentObjects(plan.Scope, *plan.MarkAttachment, retainRequiresRuntimeEvidence, false)...)
@@ -191,7 +191,7 @@ func DesiredManagedState(plan Plan) (ManagedStateSet, error) {
 }
 
 // ObservedManagedState derives the currently observed owned backend objects for
-// one non-UUID plan.
+// one plan.
 func ObservedManagedState(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, plan Plan) (ManagedStateSet, error) {
 	if err := tcSnapshot.Validate(); err != nil {
 		return ManagedStateSet{}, err
@@ -227,81 +227,6 @@ func ObservedManagedState(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, pla
 	}
 	if plan.MarkAttachment != nil && plan.MarkAttachment.Readiness == BindingReadinessReady {
 		state.Objects = append(state.Objects, observedMarkAttachmentObjects(tcSnapshot, nftSnapshot, plan.Scope, *plan.MarkAttachment, retainRequiresRuntimeEvidence)...)
-	}
-	sortManagedObjects(state.Objects)
-	if err := state.Validate(); err != nil {
-		return ManagedStateSet{}, err
-	}
-
-	return state, nil
-}
-
-// DesiredUUIDAggregateManagedState derives the backend objects RayLimit intends
-// to keep after one shared UUID aggregate plan succeeds.
-func DesiredUUIDAggregateManagedState(plan UUIDAggregatePlan) (ManagedStateSet, error) {
-	if err := plan.Validate(); err != nil {
-		return ManagedStateSet{}, err
-	}
-
-	state := ManagedStateSet{
-		OwnerKey: strings.TrimSpace(plan.Membership.Subject.Key()),
-	}
-	if plan.Operation == UUIDAggregateOperationRemove || plan.NoOp {
-		return state, nil
-	}
-
-	state.Objects = append(state.Objects,
-		managedRootQDiscObject(plan.Scope, true, false),
-		managedUUIDAggregateClassObject(plan.Scope, plan.Handles.ClassID, true, false),
-	)
-	for _, rule := range plan.AttachmentExecution.Rules {
-		state.Objects = append(state.Objects, managedUUIDAggregateAttachmentObject(plan.Scope, rule, true))
-	}
-	for _, execution := range plan.AttachmentExecution.MarkAttachments {
-		state.Objects = append(state.Objects, managedMarkAttachmentObjects(plan.Scope, execution, true, false)...)
-	}
-	sortManagedObjects(state.Objects)
-	if err := state.Validate(); err != nil {
-		return ManagedStateSet{}, err
-	}
-
-	return state, nil
-}
-
-// ObservedUUIDAggregateManagedState derives the currently observed owned backend
-// objects for one shared UUID aggregate plan.
-func ObservedUUIDAggregateManagedState(snapshot Snapshot, nftSnapshot NftablesSnapshot, plan UUIDAggregatePlan) (ManagedStateSet, error) {
-	if err := snapshot.Validate(); err != nil {
-		return ManagedStateSet{}, err
-	}
-	if err := nftSnapshot.Validate(); err != nil {
-		return ManagedStateSet{}, err
-	}
-	if err := plan.Validate(); err != nil {
-		return ManagedStateSet{}, err
-	}
-
-	rootCleanupEligible := snapshot.EligibleForRootQDiscCleanup(plan.Handles.RootHandle, plan.Handles.ClassID)
-	if !rootCleanupEligible {
-		rootCleanupEligible = snapshot.EligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemoval(plan.Handles.RootHandle, plan.Handles.ClassID)
-	}
-	if !rootCleanupEligible {
-		rootCleanupEligible = eligibleForRootQDiscCleanupAfterUUIDAggregateMarkAttachmentRemoval(snapshot, plan.Handles.RootHandle, plan.Handles.ClassID)
-	}
-	state := ManagedStateSet{
-		OwnerKey: strings.TrimSpace(plan.Membership.Subject.Key()),
-	}
-	if snapshotHasManagedRootQDisc(snapshot, plan.Handles.RootHandle) {
-		state.Objects = append(state.Objects, managedRootQDiscObject(plan.Scope, true, rootCleanupEligible))
-	}
-	if _, ok := snapshot.Class(plan.Handles.ClassID); ok {
-		state.Objects = append(state.Objects, managedUUIDAggregateClassObject(plan.Scope, plan.Handles.ClassID, true, false))
-	}
-	for _, filter := range snapshot.UUIDAggregateAttachmentFilters(plan.Handles.RootHandle, plan.Handles.ClassID) {
-		state.Objects = append(state.Objects, observedUUIDAggregateAttachmentObject(plan.Scope, filter, true))
-	}
-	for _, execution := range plan.AttachmentExecution.MarkAttachments {
-		state.Objects = append(state.Objects, observedMarkAttachmentObjects(snapshot, nftSnapshot, plan.Scope, execution, true)...)
 	}
 	sortManagedObjects(state.Objects)
 	if err := state.Validate(); err != nil {
@@ -397,11 +322,10 @@ func ClassifyManagedState(desired ManagedStateSet, observed ManagedStateSet) (Ma
 func managedOwnerKeyForSubject(subject limiter.Subject) string {
 	runtimeKey := managedRuntimeOwnerKey(subject.Binding.Runtime)
 	switch subject.Kind {
-	case policy.TargetKindConnection:
-		return runtimeKey + "|connection|" + strings.TrimSpace(subject.Binding.SessionID)
-	case policy.TargetKindUUID:
-		return runtimeKey + "|uuid|" + strings.TrimSpace(subject.Value)
 	case policy.TargetKindIP:
+		if subject.All {
+			return runtimeKey + "|ip|all"
+		}
 		return runtimeKey + "|ip|" + strings.TrimSpace(subject.Value)
 	case policy.TargetKindInbound:
 		return runtimeKey + "|inbound|" + strings.TrimSpace(subject.Value)
@@ -424,7 +348,7 @@ func managedRuntimeOwnerKey(runtime discovery.SessionRuntime) string {
 
 func managedRetentionRequiresRuntimeEvidence(kind policy.TargetKind) bool {
 	switch kind {
-	case policy.TargetKindConnection, policy.TargetKindInbound, policy.TargetKindOutbound, policy.TargetKindUUID:
+	case policy.TargetKindInbound, policy.TargetKindOutbound:
 		return true
 	default:
 		return false
@@ -453,23 +377,12 @@ func managedClassObject(scope Scope, classID string, retainRequiresRuntimeEviden
 	}
 }
 
-func managedUUIDAggregateClassObject(scope Scope, classID string, retainRequiresRuntimeEvidence bool, cleanupEligible bool) ManagedObject {
-	return ManagedObject{
-		Kind:                          ManagedObjectUUIDAggregateClass,
-		Device:                        strings.TrimSpace(scope.Device),
-		RootHandle:                    scope.rootHandle(),
-		ID:                            strings.TrimSpace(classID),
-		RetainRequiresRuntimeEvidence: retainRequiresRuntimeEvidence,
-		CleanupEligible:               cleanupEligible,
-	}
-}
-
-func managedDirectAttachmentObject(scope Scope, classID string, rule DirectAttachmentRule, retainRequiresRuntimeEvidence bool) ManagedObject {
+func managedDirectAttachmentObject(scope Scope, rule DirectAttachmentRule, retainRequiresRuntimeEvidence bool) ManagedObject {
 	return ManagedObject{
 		Kind:                          ManagedObjectDirectAttachmentFilter,
 		Device:                        strings.TrimSpace(scope.Device),
 		RootHandle:                    scope.rootHandle(),
-		ID:                            directAttachmentManagedObjectID(scope.rootHandle(), classID, rule.protocolToken(), rule.Preference),
+		ID:                            directAttachmentManagedObjectID(scope.rootHandle(), string(rule.Classifier), rule.protocolToken(), rule.Preference, directAttachmentFlowID(rule)),
 		RetainRequiresRuntimeEvidence: retainRequiresRuntimeEvidence,
 	}
 }
@@ -479,27 +392,7 @@ func observedDirectAttachmentObject(scope Scope, filter FilterState, retainRequi
 		Kind:                          ManagedObjectDirectAttachmentFilter,
 		Device:                        strings.TrimSpace(scope.Device),
 		RootHandle:                    scope.rootHandle(),
-		ID:                            directAttachmentManagedObjectID(scope.rootHandle(), filter.FlowID, filter.Protocol, filter.Preference),
-		RetainRequiresRuntimeEvidence: retainRequiresRuntimeEvidence,
-	}
-}
-
-func managedUUIDAggregateAttachmentObject(scope Scope, rule UUIDAggregateAttachmentRule, retainRequiresRuntimeEvidence bool) ManagedObject {
-	return ManagedObject{
-		Kind:                          ManagedObjectUUIDAggregateAttachmentFilter,
-		Device:                        strings.TrimSpace(scope.Device),
-		RootHandle:                    scope.rootHandle(),
-		ID:                            uuidAggregateAttachmentManagedObjectID(scope.rootHandle(), rule.AggregateClassID, rule.Preference),
-		RetainRequiresRuntimeEvidence: retainRequiresRuntimeEvidence,
-	}
-}
-
-func observedUUIDAggregateAttachmentObject(scope Scope, filter FilterState, retainRequiresRuntimeEvidence bool) ManagedObject {
-	return ManagedObject{
-		Kind:                          ManagedObjectUUIDAggregateAttachmentFilter,
-		Device:                        strings.TrimSpace(scope.Device),
-		RootHandle:                    scope.rootHandle(),
-		ID:                            uuidAggregateAttachmentManagedObjectID(scope.rootHandle(), filter.FlowID, filter.Preference),
+		ID:                            directAttachmentManagedObjectID(scope.rootHandle(), filter.Kind, filter.Protocol, filter.Preference, filter.FlowID),
 		RetainRequiresRuntimeEvidence: retainRequiresRuntimeEvidence,
 	}
 }
@@ -648,20 +541,21 @@ func snapshotHasManagedRootQDisc(snapshot Snapshot, rootHandle string) bool {
 	return false
 }
 
-func directAttachmentManagedObjectID(rootHandle, classID, protocol string, preference uint32) string {
-	return strings.Join([]string{
-		strings.TrimSpace(rootHandle),
-		strings.TrimSpace(classID),
-		strings.ToLower(strings.TrimSpace(protocol)),
-		fmt.Sprintf("%d", preference),
-	}, "|")
+func directAttachmentFlowID(rule DirectAttachmentRule) string {
+	if rule.Disposition == DirectAttachmentDispositionClassify {
+		return strings.TrimSpace(rule.ClassID)
+	}
+
+	return ""
 }
 
-func uuidAggregateAttachmentManagedObjectID(rootHandle, classID string, preference uint32) string {
+func directAttachmentManagedObjectID(rootHandle, kind, protocol string, preference uint32, flowID string) string {
 	return strings.Join([]string{
 		strings.TrimSpace(rootHandle),
-		strings.TrimSpace(classID),
+		strings.ToLower(strings.TrimSpace(kind)),
+		strings.ToLower(strings.TrimSpace(protocol)),
 		fmt.Sprintf("%d", preference),
+		strings.TrimSpace(flowID),
 	}, "|")
 }
 

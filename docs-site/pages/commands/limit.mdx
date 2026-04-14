@@ -1,0 +1,159 @@
+# limit
+
+`limit` is the operational core of RayLimit. It plans or executes a reconcile-aware traffic limit for one selected runtime-local subject.
+
+## Public Usage Shape
+
+```bash
+raylimit limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) \
+  --device <device> \
+  --direction upload|download \
+  [--rate <bytes-per-second> | --unlimited | --remove] \
+  [--source host_process|docker_container] \
+  (--pid <pid> | --container <id-or-name> | --name <name>) \
+  [--execute] \
+  [--allow-missing-tc-state] \
+  [--format text|json]
+```
+
+## What `limit` Actually Does
+
+`limit` does not blindly push traffic-control commands. It:
+
+1. validates the selected runtime and limiter subject
+2. derives the intended desired state
+3. observes current `tc` state, and `nftables` state when needed
+4. makes an explicit reconcile decision
+5. produces a plan or executes that plan when `--execute` is present
+
+That is why the command can legitimately produce apply, no-op, remove, replace, or blocked outcomes.
+
+## Target Selection
+
+Exactly one limiter family must be selected:
+
+- `--ip <ip|all>`
+- `--inbound <tag>`
+- `--outbound <tag>`
+
+Exactly one runtime must also be selected:
+
+- `--pid`
+- `--container`
+- `--name`
+
+Every request also needs:
+
+- `--device <device>`
+- `--direction upload|download`
+
+## Operation Modes
+
+| Mode | Flags | Meaning |
+| --- | --- | --- |
+| limit | `--rate` | create or reconcile a rate-limited state |
+| unlimited | `--unlimited` | create a specific-IP no-limit exception |
+| remove | `--remove` | remove the selected managed rule set |
+
+`--rate` must be greater than zero. `--unlimited` is valid only with a specific `--ip <ip>` target. It cannot be combined with `--rate`, `--remove`, or `--ip all`.
+
+## Dry-Run, Execute, And Missing Observation
+
+Dry-run is the default. Add `--execute` only when:
+
+- the report shows a concrete backend path
+- the observation is trustworthy enough for your change window
+- the host is ready for live `tc` mutation
+
+`--allow-missing-tc-state` is more exceptional. It exists for cases where you want live execution even though RayLimit could not observe `tc` state first. It is valid only with `--execute`.
+
+## How To Read The Report
+
+The text output is organized into a stable operator-facing structure:
+
+### Requested State
+
+This confirms the direction, device, and requested limit, unlimited exception, or removal.
+
+### Observation
+
+This explains whether the current `tc` state is:
+
+- available
+- reconcilable
+- already matched
+- missing expected attachment rules
+- unavailable or not comparable
+
+### Decision
+
+The reconcile decision tells you the next safe step:
+
+- `apply`
+- `no_op`
+- `replace`
+- `remove`
+
+In practical operator terms, `replace` is the reapply path. It means RayLimit saw existing state for the selected subject, but that state does not match the desired state cleanly enough to leave it alone.
+
+### Plan
+
+The plan section shows the action kind and the commands RayLimit would run or did run.
+
+### Execution And Outcome
+
+These sections tell you whether execution was blocked, whether commands were actually executed, and whether the result was preview-ready, no changes, blocked, or executed.
+
+## High-Value Examples
+
+Runtime-local IP baseline:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+```
+
+Specific per-IP override:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
+```
+
+Specific per-IP unlimited exception:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+```
+
+Inbound dry-run:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048
+```
+
+Outbound live execution:
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048 --execute
+```
+
+Specific-IP remove:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
+```
+
+JSON output for automation:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096 --format json
+```
+
+## When To Stop Instead Of Executing
+
+Do not add `--execute` merely because the command is syntactically valid. Stop and review the report when:
+
+- the selected runtime is not the one you intended
+- the subject looks wrong
+- the observation says state is not comparable
+- the decision says blocked
+- the planned commands do not match your mental model

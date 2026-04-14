@@ -1,0 +1,69 @@
+# Getting Started
+
+RayLimit is designed for deliberate host operations. The workflow is simple, but the order matters:
+
+1. install or build the CLI
+2. confirm the host can run the supporting tools
+3. discover candidate runtimes
+4. inspect one runtime
+5. preview the requested limiter in dry-run mode
+6. execute only when the path is concrete and the host is ready
+
+## What You Need Before Live Validation
+
+Plan on having these prerequisites available:
+
+- a Linux host
+- the `tc` userspace tool in `PATH`
+- at least one Xray runtime the host can discover
+- root access for live mutation
+- one network device you are prepared to shape
+
+You can still run `discover`, `inspect`, and most dry-run planning without a fully prepared host, but successful live `--execute` flows depend on real runtime evidence and working host tooling.
+
+## The Two Supported Operator Paths
+
+| Path | Use when | Typical command prefix |
+| --- | --- | --- |
+| release install | you want a normal host deployment | `raylimit ...` |
+| local checkout | you are evaluating, validating, or developing locally | `go run ./cmd/raylimit ...` or `./bin/raylimit ...` |
+
+Choose the release path when you want a conventional installed binary in `PATH`. Choose the local path when you want the fastest test loop and you are comfortable running from a checkout.
+
+## What A Good First Session Looks Like
+
+```bash
+raylimit --help
+raylimit version
+command -v tc
+sudo raylimit discover
+sudo raylimit inspect --pid 1234
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+```
+
+That sequence confirms:
+
+- the binary starts
+- the version is readable
+- the required host traffic-control tool exists
+- runtime discovery works
+- inspection works for one runtime
+- dry-run limit planning works without mutation
+
+## What Not To Skip
+
+Do not jump straight to `--execute` because the syntax looks correct. In RayLimit, the dry-run output is part of the product contract. Read it before live mutation.
+
+Pay attention to:
+
+- the selected runtime
+- the requested state
+- the observation section
+- the reconcile decision
+- the planned commands
+
+## Where To Go Next
+
+- Use [Installation](/getting-started/installation) for the supported install and source paths.
+- Use [Quick Start](/getting-started/quick-start) for a full operator walkthrough.
+- Use [Validation](/reference/validation) when you want a disciplined host validation runbook.

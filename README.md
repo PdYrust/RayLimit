@@ -18,15 +18,15 @@ RayLimit is a Linux CLI for discovering Xray runtimes, inspecting runtime state,
 
 The implemented speed limiter families are validated and actively developed. Their concrete execution scopes depend on the runtime evidence and selectors available on the host.
 
-Current public release line: `v0.1.0-beta`.
+Current public release line: `v0.2.0-beta`.
 
 ## Install
 
 From a release package:
 
 ```bash
-tar -xzf raylimit_v0.1.0-beta_linux_amd64.tar.gz
-cd raylimit_v0.1.0-beta_linux_amd64
+tar -xzf raylimit_v0.2.0-beta_linux_amd64.tar.gz
+cd raylimit_v0.2.0-beta_linux_amd64
 sudo ./scripts/install.sh
 ```
 
@@ -41,11 +41,9 @@ sudo ./scripts/install.sh
 
 | Speed limiter | Current release truth |
 | --- | --- |
-| `ip` | Validated and concrete for direct client-IP attachment, including native IPv6 within the current attachment assumptions |
-| `uuid` | Validated and actively developed as the preferred identity-oriented path, with concrete shared-pool execution under attachable client IPs and the current exact-user RoutingService socket scopes |
+| `ip` | Validated and concrete for a runtime-local `--ip all` baseline, specific per-IP overrides, and specific per-IP unlimited exceptions, including native IPv6 within the current attachment assumptions |
 | `inbound` | Validated and concrete when readable runtime configuration proves one concrete TCP listener for the selected inbound tag |
 | `outbound` | Validated and concrete when readable runtime configuration proves one unique non-zero outbound socket mark without proxy indirection |
-| `connection` | Not yet broadly developed. Foundational work is in place, and broader concrete support is planned for future releases |
 
 ## Common Commands
 
@@ -53,7 +51,7 @@ sudo ./scripts/install.sh
 raylimit --help
 raylimit discover
 raylimit inspect --pid 1234
-raylimit limit --pid 1234 --uuid user-a --device eth0 --direction upload --rate 2048
+raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048
 ```
 
 ## Documentation

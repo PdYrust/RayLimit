@@ -1,0 +1,87 @@
+# Troubleshooting
+
+This page covers the common operator-facing problems and what they mean in RayLimit terms.
+
+## `tc` Is Missing
+
+Typical signal:
+
+- `exec: "tc": executable file not found`
+- `tc state inspection failed`
+
+Install the Linux `tc` userspace tool and verify it is in `PATH`.
+
+## Runtime Selection Does Not Match
+
+If `inspect` or `limit` cannot find the target:
+
+```bash
+sudo raylimit discover
+sudo raylimit inspect --pid 1234
+```
+
+Make sure the runtime is still present and that the selector matches the current host view.
+
+## Runtime Selection Is Ambiguous
+
+If `inspect` reports multiple matches:
+
+- refine the selection with `--pid`, `--container`, `--name`, or `--source`
+- or use `--all` for inspection only
+
+`limit` requires one concrete runtime target. It does not act on multiple runtimes at once.
+
+## Execution Is Blocked
+
+Blocked execution usually means one of these:
+
+- the runtime evidence is too weak
+- selector derivation is unreadable or ambiguous
+- the backend path is not concrete for the selected family
+- current state is not comparable enough for safe live mutation
+
+Read the observation and decision sections before changing the command. Blocked execution is a safety result, not a generic crash.
+
+## `--unlimited` Validation Fails
+
+`--unlimited` works only with a specific IP target:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+```
+
+It does not work with:
+
+- `--ip all`
+- `--rate`
+- `--remove`
+- `--inbound`
+- `--outbound`
+
+## IP Baseline Does Not Behave Like Host-Global State
+
+That is expected. `--ip all` is runtime-local. If another runtime still has unshaped traffic, that does not mean the baseline failed. It means the other runtime is outside the selected subject.
+
+## Remove Does Less Than Expected
+
+Remove is conservative by design. RayLimit removes only the managed state it can attribute to the selected subject. A no-op remove can still be the correct result.
+
+For IP in particular:
+
+- removing a specific IP does not remove the baseline
+- removing the baseline does not imply removal of every specific IP rule on other subjects
+
+## A Repeated Command Does Not Execute Again
+
+That can be correct. If the observed state already matches the desired state, RayLimit can return `no_op` instead of executing a second time.
+
+## Inbound Or Outbound Stay Non-Concrete
+
+That usually points to runtime configuration evidence:
+
+- unreadable configuration
+- wildcard or ambiguous inbound listener state
+- shared or zero outbound marks
+- proxy or dialer-proxy indirection
+
+Those paths need cleaner runtime evidence before live execution becomes safe.

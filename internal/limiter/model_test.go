@@ -15,9 +15,6 @@ func testSession() discovery.Session {
 			HostPID: 4242,
 			Name:    "edge-a",
 		},
-		Policy: discovery.SessionPolicyIdentity{
-			UUID: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-		},
 		Client: discovery.SessionClient{
 			IP: "203.0.113.10",
 		},
@@ -34,16 +31,6 @@ func testDesiredState(t *testing.T, kind policy.TargetKind) DesiredState {
 	session := testSession()
 	target := policy.Target{Kind: kind}
 	switch kind {
-	case policy.TargetKindConnection:
-		target.Connection = &policy.ConnectionRef{
-			SessionID: session.ID,
-			Runtime: &discovery.SessionRuntime{
-				Source:  discovery.DiscoverySourceHostProcess,
-				HostPID: 4242,
-			},
-		}
-	case policy.TargetKindUUID:
-		target.Value = session.Policy.UUID
 	case policy.TargetKindIP:
 		target.Value = session.Client.IP
 	case policy.TargetKindInbound:
@@ -76,27 +63,60 @@ func testDesiredState(t *testing.T, kind policy.TargetKind) DesiredState {
 	return desired
 }
 
-func TestDesiredStateFromEvaluationConnectionTarget(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindConnection)
+func TestDesiredStateFromEvaluationIPTarget(t *testing.T) {
+	desired := testDesiredState(t, policy.TargetKindIP)
 
-	if desired.Subject.Kind != policy.TargetKindConnection {
-		t.Fatalf("expected connection subject, got %q", desired.Subject.Kind)
+	if desired.Mode != DesiredModeLimit {
+		t.Fatalf("expected limit desired mode, got %#v", desired)
 	}
-	if desired.Subject.Binding.SessionID != "conn-1" {
-		t.Fatalf("expected connection binding to keep session id, got %#v", desired.Subject.Binding)
+	if desired.Subject.Kind != policy.TargetKindIP || desired.Subject.Value != "203.0.113.10" {
+		t.Fatalf("unexpected ip subject, got %#v", desired.Subject)
 	}
 	if desired.Limits.Upload == nil || desired.Limits.Upload.BytesPerSecond != 2048 {
 		t.Fatalf("unexpected desired limits: %#v", desired.Limits)
 	}
 }
 
-func TestSubjectFromSessionBroaderTargetKinds(t *testing.T) {
+func TestDesiredStateFromEvaluationIPAllBaseline(t *testing.T) {
+	session := testSession()
+	evaluation, err := (policy.Evaluator{}).Evaluate([]policy.Policy{
+		{
+			Name: "ip-all-limit",
+			Target: policy.Target{
+				Kind: policy.TargetKindIP,
+				All:  true,
+			},
+			Limits: policy.LimitPolicy{
+				Upload: &policy.RateLimit{BytesPerSecond: 2048},
+			},
+		},
+	}, session)
+	if err != nil {
+		t.Fatalf("expected policy evaluation to succeed, got %v", err)
+	}
+
+	desired, err := DesiredStateFromEvaluation(session, evaluation)
+	if err != nil {
+		t.Fatalf("expected baseline desired state construction to succeed, got %v", err)
+	}
+
+	if desired.Mode != DesiredModeLimit {
+		t.Fatalf("expected limit desired mode, got %#v", desired)
+	}
+	if !desired.Subject.All || desired.Subject.Value != "" {
+		t.Fatalf("expected baseline ip subject, got %#v", desired.Subject)
+	}
+	if desired.Limits.Upload == nil || desired.Limits.Upload.BytesPerSecond != 2048 {
+		t.Fatalf("unexpected baseline desired limits: %#v", desired.Limits)
+	}
+}
+
+func TestSubjectFromSessionSupportedTargetKinds(t *testing.T) {
 	cases := []struct {
 		name  string
 		kind  policy.TargetKind
 		value string
 	}{
-		{name: "uuid", kind: policy.TargetKindUUID, value: "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
 		{name: "ip", kind: policy.TargetKindIP, value: "203.0.113.10"},
 		{name: "inbound", kind: policy.TargetKindInbound, value: "api-in"},
 		{name: "outbound", kind: policy.TargetKindOutbound, value: "direct"},
@@ -109,14 +129,8 @@ func TestSubjectFromSessionBroaderTargetKinds(t *testing.T) {
 				t.Fatalf("expected subject derivation to succeed, got %v", err)
 			}
 
-			if subject.Kind != tt.kind {
-				t.Fatalf("expected subject kind %q, got %q", tt.kind, subject.Kind)
-			}
-			if subject.Value != tt.value {
-				t.Fatalf("expected subject value %q, got %q", tt.value, subject.Value)
-			}
-			if subject.Binding.SessionID != "" {
-				t.Fatalf("expected broader subject to avoid session binding, got %#v", subject.Binding)
+			if subject.Kind != tt.kind || subject.Value != tt.value {
+				t.Fatalf("unexpected subject: %#v", subject)
 			}
 		})
 	}
@@ -157,31 +171,35 @@ func TestIPSubjectsCompareByCanonicalAddressIdentity(t *testing.T) {
 	}
 }
 
-func TestAppliedStateValidateRejectsIncompleteState(t *testing.T) {
-	applied := AppliedState{
-		Subject: Subject{
-			Kind:  policy.TargetKindIP,
-			Value: "203.0.113.10",
-			Binding: RuntimeBinding{
-				Runtime: discovery.SessionRuntime{
-					Source:  discovery.DiscoverySourceHostProcess,
-					HostPID: 4242,
-				},
-			},
+func TestIPSubjectsRemainDistinctAcrossRuntimes(t *testing.T) {
+	left := Subject{
+		Kind:  policy.TargetKindIP,
+		Value: "203.0.113.10",
+		Binding: RuntimeBinding{
+			Runtime: testSession().Runtime,
 		},
-		Limits: policy.LimitPolicy{
-			Download: &policy.RateLimit{BytesPerSecond: 1024},
+	}
+	right := Subject{
+		Kind:  policy.TargetKindIP,
+		Value: "203.0.113.10",
+		Binding: RuntimeBinding{
+			Runtime: discovery.SessionRuntime{
+				Source:  discovery.DiscoverySourceHostProcess,
+				HostPID: 4343,
+				Name:    "edge-b",
+			},
 		},
 	}
 
-	if err := applied.Validate(); err == nil {
-		t.Fatal("expected applied state without driver to fail validation")
+	if left.Equal(right) {
+		t.Fatalf("expected identical ips on different runtimes to remain distinct subjects, got %#v and %#v", left, right)
 	}
 }
 
 func TestActionValidateIntents(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindUUID)
+	desired := testDesiredState(t, policy.TargetKindIP)
 	applied := AppliedState{
+		Mode:    DesiredModeLimit,
 		Subject: desired.Subject,
 		Limits:  desired.Limits,
 		Driver:  "tc",
@@ -215,13 +233,6 @@ func TestActionValidateIntents(t *testing.T) {
 				Applied: []AppliedState{applied},
 			},
 		},
-		{
-			name: "inspect",
-			action: Action{
-				Kind:    ActionInspect,
-				Subject: desired.Subject,
-			},
-		},
 	}
 
 	for _, tt := range cases {
@@ -233,33 +244,10 @@ func TestActionValidateIntents(t *testing.T) {
 	}
 }
 
-func TestActionValidateRejectsMismatchedState(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindConnection)
-	mismatchedSubject := Subject{
-		Kind:  policy.TargetKindIP,
-		Value: "203.0.113.10",
-		Binding: RuntimeBinding{
-			Runtime: discovery.SessionRuntime{
-				Source:  discovery.DiscoverySourceHostProcess,
-				HostPID: 4242,
-			},
-		},
-	}
-
-	action := Action{
-		Kind:    ActionApply,
-		Subject: mismatchedSubject,
-		Desired: &desired,
-	}
-
-	if err := action.Validate(); err == nil {
-		t.Fatal("expected mismatched action subject to fail validation")
-	}
-}
-
 func TestAppliedStateMatchesDesired(t *testing.T) {
 	desired := testDesiredState(t, policy.TargetKindOutbound)
 	applied := AppliedState{
+		Mode:    DesiredModeLimit,
 		Subject: desired.Subject,
 		Limits:  desired.Limits,
 		Driver:  "tc",
@@ -267,5 +255,84 @@ func TestAppliedStateMatchesDesired(t *testing.T) {
 
 	if !applied.MatchesDesired(desired) {
 		t.Fatalf("expected applied state to match desired state, got %#v and %#v", applied, desired)
+	}
+}
+
+func TestSubjectFromTargetBuildsIPBaselineSubject(t *testing.T) {
+	subject, err := SubjectFromTarget(policy.Target{
+		Kind: policy.TargetKindIP,
+		All:  true,
+	}, testSession())
+	if err != nil {
+		t.Fatalf("expected ip baseline subject derivation to succeed, got %v", err)
+	}
+
+	if !subject.All || subject.Value != "" {
+		t.Fatalf("expected baseline ip subject, got %#v", subject)
+	}
+}
+
+func TestDesiredStateFromEvaluationIPUnlimited(t *testing.T) {
+	session := testSession()
+	evaluation, err := (policy.Evaluator{}).Evaluate([]policy.Policy{
+		{
+			Name:   "ip-unlimited",
+			Effect: policy.EffectExclude,
+			Target: policy.Target{
+				Kind:  policy.TargetKindIP,
+				Value: session.Client.IP,
+			},
+		},
+	}, session)
+	if err != nil {
+		t.Fatalf("expected policy evaluation to succeed, got %v", err)
+	}
+
+	desired, err := DesiredStateFromEvaluation(session, evaluation)
+	if err != nil {
+		t.Fatalf("expected unlimited desired state construction to succeed, got %v", err)
+	}
+
+	if desired.Mode != DesiredModeUnlimited {
+		t.Fatalf("expected unlimited desired mode, got %#v", desired)
+	}
+	if desired.Subject.All || desired.Subject.Value != "203.0.113.10" {
+		t.Fatalf("expected specific ip unlimited subject, got %#v", desired.Subject)
+	}
+	if desired.Limits.HasAny() {
+		t.Fatalf("expected unlimited desired state to keep empty limits, got %#v", desired)
+	}
+}
+
+func TestAppliedUnlimitedStateMatchesUnlimitedDesiredState(t *testing.T) {
+	session := testSession()
+	evaluation, err := (policy.Evaluator{}).Evaluate([]policy.Policy{
+		{
+			Name:   "ip-unlimited",
+			Effect: policy.EffectExclude,
+			Target: policy.Target{
+				Kind:  policy.TargetKindIP,
+				Value: session.Client.IP,
+			},
+		},
+	}, session)
+	if err != nil {
+		t.Fatalf("expected policy evaluation to succeed, got %v", err)
+	}
+	desired, err := DesiredStateFromEvaluation(session, evaluation)
+	if err != nil {
+		t.Fatalf("expected unlimited desired state construction to succeed, got %v", err)
+	}
+
+	applied := AppliedState{
+		Mode:    DesiredModeUnlimited,
+		Subject: desired.Subject,
+		Driver:  "tc",
+	}
+	if err := applied.Validate(); err != nil {
+		t.Fatalf("expected unlimited applied state to validate, got %v", err)
+	}
+	if !applied.MatchesDesired(desired) {
+		t.Fatalf("expected unlimited applied state to match desired state, got %#v and %#v", applied, desired)
 	}
 }

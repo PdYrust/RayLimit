@@ -14,9 +14,6 @@ func TestSessionValidateHostSession(t *testing.T) {
 			Name:     "edge-a",
 			HostPID:  4242,
 		},
-		Policy: SessionPolicyIdentity{
-			UUID: "F47AC10B-58CC-4372-A567-0E02B2C3D479",
-		},
 		Client: SessionClient{
 			IP: "203.0.113.10",
 		},
@@ -41,38 +38,6 @@ func TestSessionValidateRejectsZeroValueSession(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "invalid runtime association") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestSessionSamePolicyIdentityAllowsDistinctSessionsForSharedUUID(t *testing.T) {
-	first := Session{
-		ID: "conn-1",
-		Runtime: SessionRuntime{
-			Source:  DiscoverySourceHostProcess,
-			HostPID: 1001,
-		},
-		Policy: SessionPolicyIdentity{
-			UUID: "F47AC10B-58CC-4372-A567-0E02B2C3D479",
-		},
-	}
-
-	second := Session{
-		ID: "conn-2",
-		Runtime: SessionRuntime{
-			Source:  DiscoverySourceHostProcess,
-			HostPID: 1001,
-		},
-		Policy: SessionPolicyIdentity{
-			UUID: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-		},
-	}
-
-	if first.ID == second.ID {
-		t.Fatal("expected sessions to remain distinct per connection")
-	}
-
-	if !first.SamePolicyIdentity(second) {
-		t.Fatalf("expected shared uuid to correlate policy identity, got %#v and %#v", first, second)
 	}
 }
 

@@ -15,8 +15,6 @@ func testMarkAttachmentExecution(t *testing.T, kind IdentityKind, classID string
 	value := "api-in"
 	if kind == IdentityKindOutbound {
 		value = "direct"
-	} else if kind == IdentityKindUUIDRouting {
-		value = "user-a|tcp|2001:db8::10|43123"
 	}
 
 	execution, err := BuildMarkAttachmentExecution(MarkAttachmentInput{
@@ -54,6 +52,7 @@ func testMarkAttachmentPlan(t *testing.T, kind policy.TargetKind, actionKind lim
 	}
 	if actionKind == limiter.ActionRemove {
 		action.Applied = []limiter.AppliedState{{
+			Mode:      limiter.DesiredModeLimit,
 			Subject:   desired.Subject,
 			Limits:    desired.Limits,
 			Driver:    "tc",
@@ -106,7 +105,6 @@ func TestBuildMarkAttachmentExecutionDefaultsInboundAndOutboundHooks(t *testing.
 	}{
 		{name: "inbound", kind: IdentityKindInbound, hook: "input", restoreHook: "output", value: "api-in"},
 		{name: "outbound", kind: IdentityKindOutbound, hook: "output", value: "direct"},
-		{name: "uuid-routing", kind: IdentityKindUUIDRouting, hook: "output", value: "user-a|tcp|2001:db8::10|43123"},
 	}
 
 	for _, test := range tests {

@@ -13,16 +13,14 @@ import (
 type TargetKind string
 
 const (
-	TargetKindUUID       TargetKind = "uuid"
-	TargetKindIP         TargetKind = "ip"
-	TargetKindInbound    TargetKind = "inbound"
-	TargetKindOutbound   TargetKind = "outbound"
-	TargetKindConnection TargetKind = "connection"
+	TargetKindIP       TargetKind = "ip"
+	TargetKindInbound  TargetKind = "inbound"
+	TargetKindOutbound TargetKind = "outbound"
 )
 
 func (k TargetKind) Valid() bool {
 	switch k {
-	case TargetKindUUID, TargetKindIP, TargetKindInbound, TargetKindOutbound, TargetKindConnection:
+	case TargetKindIP, TargetKindInbound, TargetKindOutbound:
 		return true
 	default:
 		return false
@@ -33,10 +31,6 @@ func (k TargetKind) Valid() bool {
 // Higher values are more specific and therefore win over broader matches.
 func (k TargetKind) Precedence() int {
 	switch k {
-	case TargetKindConnection:
-		return 5
-	case TargetKindUUID:
-		return 4
 	case TargetKindIP:
 		return 3
 	case TargetKindInbound:
@@ -52,8 +46,6 @@ func (k TargetKind) Precedence() int {
 // precedence for deterministic coexistence and reporting.
 func TargetKindPrecedenceOrder() []TargetKind {
 	return []TargetKind{
-		TargetKindConnection,
-		TargetKindUUID,
 		TargetKindIP,
 		TargetKindInbound,
 		TargetKindOutbound,
@@ -136,6 +128,7 @@ func (p Policy) Validate() error {
 type Selection struct {
 	Kind       TargetKind `json:"kind,omitempty"`
 	Precedence int        `json:"precedence,omitempty"`
+	Target     Target     `json:"target,omitempty"`
 	Excludes   []Policy   `json:"excludes,omitempty"`
 	Limits     []Policy   `json:"limits,omitempty"`
 }
@@ -210,9 +203,9 @@ func (r RateLimit) Validate() error {
 
 // Target identifies what a policy should match.
 type Target struct {
-	Kind       TargetKind     `json:"kind"`
-	Value      string         `json:"value,omitempty"`
-	Connection *ConnectionRef `json:"connection,omitempty"`
+	Kind  TargetKind `json:"kind"`
+	All   bool       `json:"all,omitempty"`
+	Value string     `json:"value,omitempty"`
 }
 
 // Validate checks that a policy target is internally consistent.
@@ -223,32 +216,24 @@ func (t Target) Validate() error {
 
 	value := strings.TrimSpace(t.Value)
 	switch t.Kind {
-	case TargetKindUUID, TargetKindInbound, TargetKindOutbound:
+	case TargetKindInbound, TargetKindOutbound:
+		if t.All {
+			return fmt.Errorf("%s target cannot use all", t.Kind)
+		}
 		if value == "" {
 			return fmt.Errorf("%s target requires a value", t.Kind)
 		}
-		if t.Connection != nil {
-			return fmt.Errorf("%s target cannot include connection details", t.Kind)
-		}
 	case TargetKindIP:
-		if value == "" {
+		switch {
+		case t.All && value != "":
+			return errors.New("ip target cannot combine all with a specific value")
+		case !t.All && value == "":
 			return errors.New("ip target requires a value")
+		case t.All:
+			return nil
 		}
 		if _, err := ipaddr.Normalize(value); err != nil {
 			return fmt.Errorf("invalid ip target value %q", value)
-		}
-		if t.Connection != nil {
-			return errors.New("ip target cannot include connection details")
-		}
-	case TargetKindConnection:
-		if t.Connection == nil {
-			return errors.New("connection target requires connection details")
-		}
-		if value != "" {
-			return errors.New("connection target cannot define a generic value")
-		}
-		if err := t.Connection.Validate(); err != nil {
-			return fmt.Errorf("invalid connection reference: %w", err)
 		}
 	}
 
@@ -258,75 +243,34 @@ func (t Target) Validate() error {
 // MatchesSession reports whether the target matches the given session identity.
 func (t Target) MatchesSession(session discovery.Session) bool {
 	switch t.Kind {
-	case TargetKindUUID:
-		return strings.EqualFold(strings.TrimSpace(t.Value), strings.TrimSpace(session.Policy.UUID))
 	case TargetKindIP:
+		if t.All {
+			return true
+		}
 		return ipaddr.Equal(t.Value, session.Client.IP)
 	case TargetKindInbound:
 		return strings.TrimSpace(t.Value) == strings.TrimSpace(session.Route.InboundTag)
 	case TargetKindOutbound:
 		return strings.TrimSpace(t.Value) == strings.TrimSpace(session.Route.OutboundTag)
-	case TargetKindConnection:
-		return t.Connection != nil && t.Connection.MatchesSession(session)
 	default:
 		return false
 	}
 }
 
-// ConnectionRef identifies an individual runtime connection.
-type ConnectionRef struct {
-	SessionID string                    `json:"session_id"`
-	Runtime   *discovery.SessionRuntime `json:"runtime,omitempty"`
-}
-
-// Validate checks that a connection reference is internally consistent.
-func (r ConnectionRef) Validate() error {
-	if strings.TrimSpace(r.SessionID) == "" {
-		return errors.New("session_id is required")
-	}
-
-	if r.Runtime == nil {
-		return errors.New("connection target requires a runtime association")
-	}
-
-	if err := r.Runtime.Validate(); err != nil {
-		return fmt.Errorf("invalid runtime association: %w", err)
-	}
-
-	return nil
-}
-
-// MatchesSession reports whether the connection reference matches the given session.
-func (r ConnectionRef) MatchesSession(session discovery.Session) bool {
-	if strings.TrimSpace(r.SessionID) != strings.TrimSpace(session.ID) {
-		return false
-	}
-
-	if r.Runtime == nil {
-		return true
-	}
-
-	return r.Runtime.MatchesTarget(runtimeTargetFromSession(session))
-}
-
-func runtimeTargetFromSession(session discovery.Session) discovery.RuntimeTarget {
-	target := discovery.RuntimeTarget{
-		Source: session.Runtime.Source,
-		Identity: discovery.RuntimeIdentity{
-			Name: session.Runtime.Name,
-		},
-	}
-
-	switch session.Runtime.Source {
-	case discovery.DiscoverySourceHostProcess:
-		target.HostProcess = &discovery.HostProcessCandidate{
-			PID: session.Runtime.HostPID,
+func (t Target) specificity() int {
+	switch t.Kind {
+	case TargetKindIP:
+		if t.All {
+			return 1
 		}
-	case discovery.DiscoverySourceDockerContainer:
-		target.DockerContainer = &discovery.DockerContainerCandidate{
-			ID: session.Runtime.ContainerID,
+		if strings.TrimSpace(t.Value) != "" {
+			return 2
+		}
+	case TargetKindInbound, TargetKindOutbound:
+		if strings.TrimSpace(t.Value) != "" {
+			return 1
 		}
 	}
 
-	return target
+	return 0
 }

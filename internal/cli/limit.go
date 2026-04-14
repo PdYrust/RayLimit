@@ -10,10 +10,8 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/PdYrust/RayLimit/internal/buildinfo"
-	"github.com/PdYrust/RayLimit/internal/correlation"
 	"github.com/PdYrust/RayLimit/internal/discovery"
 	"github.com/PdYrust/RayLimit/internal/limiter"
 	"github.com/PdYrust/RayLimit/internal/policy"
@@ -81,6 +79,7 @@ type limitOptions struct {
 	device              string
 	direction           tc.Direction
 	rateBytes           int64
+	unlimited           bool
 	execute             bool
 	allowMissingTCState bool
 }
@@ -104,9 +103,25 @@ func (o limitOptions) Validate() error {
 	if !o.direction.Valid() {
 		return fmt.Errorf("unsupported direction %q", o.direction)
 	}
+	targetRule, err := o.target.policyTarget()
+	if err != nil {
+		return err
+	}
+	if o.unlimited {
+		if o.operation == limitOperationRemove {
+			return errors.New("cannot use --unlimited with --remove")
+		}
+		if targetRule.Kind != policy.TargetKindIP || targetRule.All {
+			return errors.New("--unlimited requires a specific --ip target")
+		}
+	}
 	if o.operation == limitOperationRemove {
 		if o.rateBytes != 0 {
 			return errors.New("cannot use --rate with --remove")
+		}
+	} else if o.unlimited {
+		if o.rateBytes != 0 {
+			return errors.New("cannot use --rate with --unlimited")
 		}
 	} else if o.rateBytes <= 0 {
 		return errors.New("rate must be greater than zero")
@@ -165,18 +180,6 @@ type limitAttachmentObservation struct {
 	NFTSnapshot tc.NftablesSnapshot
 }
 
-type limitCorrelationReport struct {
-	Scope               correlation.UUIDScope  `json:"scope,omitempty"`
-	Status              correlation.UUIDStatus `json:"status,omitempty"`
-	MatchedSessionCount int                    `json:"matched_session_count,omitempty"`
-	Sessions            []discovery.Session    `json:"sessions,omitempty"`
-	Note                string                 `json:"note,omitempty"`
-}
-
-func (r limitCorrelationReport) hasData() bool {
-	return r.Scope != "" || r.Status != "" || len(r.Sessions) != 0 || r.Note != ""
-}
-
 type limitPolicyEvaluationReport struct {
 	PrecedenceOrder   string             `json:"precedence_order,omitempty"`
 	WinningKind       policy.TargetKind  `json:"winning_kind,omitempty"`
@@ -194,36 +197,6 @@ func (r limitPolicyEvaluationReport) hasData() bool {
 
 func (r limitPolicyEvaluationReport) hasCoexistence() bool {
 	return len(r.Matches) > 1 || len(r.Winning) > 1 || len(r.NonWinning) != 0
-}
-
-type limitUUIDAggregateReport struct {
-	Mode                         string                                 `json:"mode"`
-	MemberCount                  int                                    `json:"member_count"`
-	Cardinality                  correlation.UUIDAggregateCardinality   `json:"membership_cardinality,omitempty"`
-	SharedClassID                string                                 `json:"shared_class_id,omitempty"`
-	ShapingIdentity              string                                 `json:"shaping_identity,omitempty"`
-	ShapingReadiness             tc.BindingReadiness                    `json:"shaping_readiness,omitempty"`
-	AttachmentReadiness          tc.BindingReadiness                    `json:"attachment_readiness,omitempty"`
-	AttachmentExecutionReadiness tc.BindingReadiness                    `json:"attachment_execution_readiness,omitempty"`
-	Confidence                   tc.BindingConfidence                   `json:"confidence,omitempty"`
-	Note                         string                                 `json:"note,omitempty"`
-	AttachmentNote               string                                 `json:"attachment_note,omitempty"`
-	AttachmentExecutionNote      string                                 `json:"attachment_execution_note,omitempty"`
-	AttachmentExecutionBackend   tc.UUIDAggregateAttachmentBackend      `json:"attachment_execution_backend,omitempty"`
-	MemberAttachability          []tc.UUIDAggregateMemberAttachability  `json:"member_attachability,omitempty"`
-	NonIPBackend                 *discovery.UUIDNonIPBackendCandidate   `json:"non_ip_backend,omitempty"`
-	RoutingEvidenceState         discovery.UUIDRoutingEvidenceState     `json:"routing_evidence_state,omitempty"`
-	RoutingEvidenceFreshness     discovery.UUIDRoutingEvidenceFreshness `json:"routing_evidence_freshness,omitempty"`
-	RoutingEvidenceNote          string                                 `json:"routing_evidence_note,omitempty"`
-	Attachments                  []tc.UUIDAggregateMemberAttachment     `json:"attachments,omitempty"`
-	AttachmentExecution          []tc.UUIDAggregateAttachmentRule       `json:"attachment_execution,omitempty"`
-	MarkAttachmentExecution      []tc.MarkAttachmentExecution           `json:"mark_attachment_execution,omitempty"`
-	Observation                  limitObservationReport                 `json:"observation"`
-	Decision                     limitDecisionReport                    `json:"decision"`
-	Plan                         *tc.UUIDAggregatePlan                  `json:"plan,omitempty"`
-	Results                      []tc.Result                            `json:"results,omitempty"`
-	ExecutionBlocked             bool                                   `json:"execution_blocked,omitempty"`
-	ExecutionNote                string                                 `json:"execution_note,omitempty"`
 }
 
 type limitDirectAttachmentReport struct {
@@ -246,22 +219,13 @@ func (r limitDirectAttachmentReport) hasData() bool {
 		len(r.AttachmentExecution) != 0
 }
 
-type limitUUIDMode string
-
-const (
-	limitUUIDModeAggregateSharedPool limitUUIDMode = "aggregate_shared_pool"
-)
-
 type limitReport struct {
 	Mode             string                       `json:"mode"`
 	Operation        limitOperation               `json:"operation"`
 	Runtime          discovery.RuntimeTarget      `json:"runtime"`
 	TargetKind       policy.TargetKind            `json:"target_kind"`
 	TargetValue      string                       `json:"target_value"`
-	ConnectionID     string                       `json:"connection_id,omitempty"`
-	UUIDMode         limitUUIDMode                `json:"uuid_mode,omitempty"`
-	UUIDModeNote     string                       `json:"uuid_mode_note,omitempty"`
-	Correlation      limitCorrelationReport       `json:"correlation"`
+	Unlimited        bool                         `json:"unlimited,omitempty"`
 	ExecutionBlocked bool                         `json:"execution_blocked,omitempty"`
 	ExecutionNote    string                       `json:"execution_note,omitempty"`
 	Scope            tc.Scope                     `json:"scope"`
@@ -271,7 +235,6 @@ type limitReport struct {
 	Observation      limitObservationReport       `json:"observation"`
 	Decision         limitDecisionReport          `json:"decision"`
 	Plan             *tc.Plan                     `json:"plan,omitempty"`
-	UUIDAggregate    *limitUUIDAggregateReport    `json:"uuid_aggregate,omitempty"`
 	Results          []tc.Result                  `json:"results,omitempty"`
 	ProviderErrors   []discovery.ProviderError    `json:"provider_errors,omitempty"`
 }
@@ -280,8 +243,8 @@ func (a App) newLimitCommand() command {
 	cmd := command{
 		name:        "limit",
 		summary:     "Plan or execute a reconcile-aware traffic limit",
-		usage:       buildinfo.BinaryName + " limit (--connection <session-id> | --uuid <uuid> | --ip <ip> | --inbound <tag> | --outbound <tag>) --device <device> --direction upload|download [--rate <bytes-per-second> | --remove] [--source host_process|docker_container] (--pid <pid> | --container <id-or-name> | --name <name>) [--execute] [--allow-missing-tc-state] [--format text|json]",
-		description: "Plan a reconcile-aware tc-backed limit flow for a selected runtime target. Connection-scoped limiting remains available for session-scoped planning and cleanup, but real apply execution stays blocked until a trustworthy runtime-aware traffic classifier exists. IP-targeted limiting now adds concrete direct client-ip attachment rules for IPv4, for IPv4-mapped IPv6 after canonicalization to IPv4, and for IPv6 traffic that fits the current u32 backend assumption of no IPv6 extension headers. Inbound-targeted limiting now uses concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag; otherwise it stays conservative and blocks apply execution. Outbound-targeted limiting now uses concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark for the selected tag without proxy or dialer-proxy indirection; otherwise it stays conservative and blocks concrete execution. Plain --uuid uses the product-facing shared UUID aggregate path, where one runtime-local UUID maps to one shared tc class instead of per-session fan-out. That path stays concrete for attachable client-ip members, and now adds concrete non-ip RoutingService-backed socket classification in two safe scopes: upload by exact-user local socket tuple and download by exact-user client socket tuple, both without falling back to shared client IP. Zero live members remains a safe no-op; stale, partial, missing, or unsupported routing evidence still keeps execute blocked, and broader remote-target or metadata-only routing contexts remain future work until a safe exact-user remote-socket classifier exists.",
+		usage:       buildinfo.BinaryName + " limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) --device <device> --direction upload|download [--rate <bytes-per-second> | --unlimited | --remove] [--source host_process|docker_container] (--pid <pid> | --container <id-or-name> | --name <name>) [--execute] [--allow-missing-tc-state] [--format text|json]",
+		description: "Plan a reconcile-aware tc-backed limit flow for a selected runtime target. IP-targeted limiting supports a runtime-local baseline with --ip all, specific per-IP override limits, and specific per-IP unlimited exceptions. Concrete direct client-ip rules cover IPv4, IPv4-mapped IPv6 after canonicalization to IPv4, and IPv6 traffic that fits the current u32 backend assumption of no IPv6 extension headers. Inbound-targeted limiting uses concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag; otherwise it stays conservative and blocks apply execution. Outbound-targeted limiting uses concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark for the selected tag without proxy or dialer-proxy indirection; otherwise it stays conservative and blocks concrete execution.",
 	}
 
 	cmd.help = func(w io.Writer) {
@@ -307,11 +270,10 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	device := ""
 	direction := ""
 	rate := int64(0)
-	connection := ""
-	uuid := ""
 	ip := ""
 	inbound := ""
 	outbound := ""
+	unlimited := false
 	execute := false
 	remove := false
 	allowMissingTCState := false
@@ -324,13 +286,12 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	flags.StringVar(&device, "device", device, "Linux network device")
 	flags.StringVar(&direction, "direction", direction, "limit direction")
 	flags.Int64Var(&rate, "rate", rate, "rate limit in bytes per second")
-	flags.StringVar(&connection, "connection", connection, "runtime session identifier")
-	flags.StringVar(&uuid, "uuid", uuid, "runtime-local UUID; one shared aggregate pool on the selected runtime")
-	flags.StringVar(&ip, "ip", ip, "client IPv4 or IPv6 address")
+	flags.StringVar(&ip, "ip", ip, "client IPv4 or IPv6 address or all")
 	flags.StringVar(&inbound, "inbound", inbound, "inbound tag")
 	flags.StringVar(&outbound, "outbound", outbound, "outbound tag")
+	flags.BoolVar(&unlimited, "unlimited", unlimited, "create a specific IP no-limit exception")
 	flags.BoolVar(&execute, "execute", execute, "perform real local tc execution")
-	flags.BoolVar(&remove, "remove", remove, "remove the selected target limit instead of planning a new one")
+	flags.BoolVar(&remove, "remove", remove, "remove the selected target rule set instead of planning a new one")
 	flags.BoolVar(&allowMissingTCState, "allow-missing-tc-state", allowMissingTCState, "allow real execution when tc state cannot be observed first")
 
 	if err := flags.Parse(args); err != nil {
@@ -356,15 +317,14 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 			Container: strings.TrimSpace(container),
 		},
 		target: limitTargetSelection{
-			Connection: strings.TrimSpace(connection),
-			UUID:       strings.TrimSpace(uuid),
-			IP:         strings.TrimSpace(ip),
-			Inbound:    strings.TrimSpace(inbound),
-			Outbound:   strings.TrimSpace(outbound),
+			IP:       strings.TrimSpace(ip),
+			Inbound:  strings.TrimSpace(inbound),
+			Outbound: strings.TrimSpace(outbound),
 		},
 		device:              strings.TrimSpace(device),
 		direction:           tc.Direction(strings.TrimSpace(direction)),
 		rateBytes:           rate,
+		unlimited:           unlimited,
 		execute:             execute,
 		allowMissingTCState: allowMissingTCState,
 	}
@@ -424,14 +384,6 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 		return limitReport{}, fmt.Errorf("failed to construct session context: %w", err)
 	}
 
-	correlationResult, correlationReport, err := a.limitCorrelation(context.Background(), runtime, options)
-	if err != nil {
-		return limitReport{}, err
-	}
-	if options.target.Kind() == policy.TargetKindUUID {
-		return a.limitUUIDAggregateReport(context.Background(), target, runtime, options, correlationResult, correlationReport, providerErrors)
-	}
-
 	scope := tc.Scope{
 		Device:    options.device,
 		Direction: options.direction,
@@ -448,9 +400,7 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 		Runtime:        target,
 		TargetKind:     options.target.Kind(),
 		TargetValue:    options.target.Value(),
-		UUIDMode:       limitUUIDModeForOptions(options),
-		UUIDModeNote:   limitUUIDModeNote(options),
-		Correlation:    correlationReport,
+		Unlimited:      options.unlimited,
 		Scope:          scope,
 		RateBytes:      options.rateBytes,
 		ProviderErrors: providerErrors,
@@ -458,11 +408,8 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 	if desired != nil {
 		report.PolicyEvaluation = limitPolicyEvaluationFromEvaluation(desired.PolicyEvaluation)
 	}
-	if options.target.Kind() == policy.TargetKindConnection {
-		report.ConnectionID = options.target.Value()
-	}
 
-	observedState, err := a.observeLimitState(context.Background(), target, subject, scope, options.operation)
+	observedState, err := a.observeLimitState(context.Background(), target, subject, desired, scope, options.operation)
 	if err != nil {
 		return limitReport{}, fmt.Errorf("failed to inspect current tc state: %w", err)
 	}
@@ -500,10 +447,6 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 
 	if options.execute && options.operation != limitOperationRemove {
 		switch options.target.Kind() {
-		case policy.TargetKindConnection:
-			report.ExecutionBlocked = true
-			report.ExecutionNote = blockedConnectionApplyExecutionNote()
-			return report, errors.New(report.ExecutionNote)
 		case policy.TargetKindInbound:
 			if executionPlan.MarkAttachment == nil || executionPlan.MarkAttachment.Readiness != tc.BindingReadinessReady {
 				report.ExecutionBlocked = true
@@ -598,210 +541,13 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 	return report, nil
 }
 
-func (a App) limitUUIDAggregateReport(
-	ctx context.Context,
-	target discovery.RuntimeTarget,
-	runtime discovery.SessionRuntime,
-	options limitOptions,
-	correlationResult correlation.UUIDResult,
-	correlationReport limitCorrelationReport,
-	providerErrors []discovery.ProviderError,
-) (limitReport, error) {
-	scope := tc.Scope{
-		Device:    options.device,
-		Direction: options.direction,
-	}
-
-	report := limitReport{
-		Mode:           limitMode(options.execute),
-		Operation:      options.operation,
-		Runtime:        target,
-		TargetKind:     options.target.Kind(),
-		TargetValue:    options.target.Value(),
-		UUIDMode:       limitUUIDModeForOptions(options),
-		UUIDModeNote:   limitUUIDModeNote(options),
-		Correlation:    correlationReport,
-		Scope:          scope,
-		RateBytes:      options.rateBytes,
-		ProviderErrors: providerErrors,
-	}
-
-	aggregateReport := &limitUUIDAggregateReport{
-		Mode: "shared_class",
-		Note: "shared UUID aggregate shaping uses one runtime-local class identity; member attachment identities are derived and reported, and concrete execution now uses either attachable client-ip rules, including native ipv6 within the current no-extension-header assumption, or fresh RoutingService-backed socket-tuple mark classification in the current safe non-ip scopes. Stale, partial, or unsupported routing evidence remains blocked.",
-	}
-	report.UUIDAggregate = aggregateReport
-
-	if correlationResult.Status == correlation.UUIDStatusUnavailable && options.operation != limitOperationRemove {
-		reason := unavailableUUIDAggregateReason(correlationResult)
-		report.Decision = limitDecisionReport{
-			Kind:   limiter.DecisionNoOp,
-			Reason: reason,
-		}
-		report.Observation.Error = "tc observation was skipped because shared UUID aggregate membership is not currently observable"
-		aggregateReport.Decision = report.Decision
-		aggregateReport.Observation = report.Observation
-		if options.execute {
-			report.ExecutionBlocked = true
-			report.ExecutionNote = reason
-			aggregateReport.ExecutionBlocked = true
-			aggregateReport.ExecutionNote = reason
-			return report, errors.New(reason)
-		}
-		return report, nil
-	}
-
-	membership, membershipObservable, err := uuidAggregateMembershipForReport(runtime, options.target.Value(), correlationResult, options.operation)
-	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to construct shared uuid aggregate membership: %w", err)
-	}
-	attachability, err := tc.BuildUUIDAggregateAttachabilityMap(membership)
-	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to classify shared uuid aggregate attachability: %w", err)
-	}
-
-	planInput := tc.UUIDAggregatePlanInput{
-		Operation:  uuidAggregateOperation(options.operation),
-		Membership: membership,
-		Scope:      scope,
-	}
-	if options.operation == limitOperationApply {
-		planInput.Limits = limitPolicyForDirection(options.direction, options.rateBytes)
-	}
-	if attachability.BlockingCount != 0 {
-		if provider := a.uuidRoutingEvidenceProvider(); provider != nil {
-			now := time.Now()
-			routingEvidence, err := provider.ObserveUUIDRoutingEvidence(ctx, runtime, options.target.Value())
-			if err != nil {
-				return limitReport{}, fmt.Errorf("failed to observe uuid routing evidence: %w", err)
-			}
-			routingAssessment, err := discovery.AssessUUIDRoutingEvidence(
-				discovery.UUIDRoutingEvidenceSnapshot{
-					Result:     routingEvidence,
-					ObservedAt: now,
-				},
-				uuidRoutingEvidencePolicy(),
-				now,
-			)
-			if err != nil {
-				return limitReport{}, fmt.Errorf("failed to assess uuid routing evidence: %w", err)
-			}
-			planInput.RoutingEvidence = &routingEvidence
-			planInput.RoutingEvidenceAssessment = &routingAssessment
-			aggregateReport.NonIPBackend = routingEvidence.Candidate
-			aggregateReport.RoutingEvidenceState = routingEvidence.State()
-			aggregateReport.RoutingEvidenceFreshness = routingAssessment.Freshness
-			aggregateReport.RoutingEvidenceNote = strings.TrimSpace(routingAssessment.Reason)
-			if summary := strings.TrimSpace(routingEvidence.IssueSummary()); summary != "" {
-				if aggregateReport.RoutingEvidenceNote == "" {
-					aggregateReport.RoutingEvidenceNote = summary
-				} else if !strings.Contains(aggregateReport.RoutingEvidenceNote, summary) {
-					aggregateReport.RoutingEvidenceNote += "; " + summary
-				}
-			}
-		} else {
-			candidate, err := a.uuidNonIPBackendDeriver().Derive(ctx, target, options.target.Value())
-			if err != nil {
-				return limitReport{}, fmt.Errorf("failed to derive uuid non-ip backend candidate: %w", err)
-			}
-			aggregateReport.NonIPBackend = &candidate
-		}
-	}
-
-	aggregatePlan, err := a.planner().PlanUUIDAggregate(planInput)
-	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to build shared uuid aggregate plan: %w", err)
-	}
-
-	populateUUIDAggregateReportFromPlan(aggregateReport, aggregatePlan, membershipObservable)
-
-	observation, aggregateObservation, snapshot, nftSnapshot, err := a.observeUUIDAggregateState(ctx, aggregatePlan)
-	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to inspect current shared uuid tc state: %w", err)
-	}
-	report.Observation = observation
-	aggregateReport.Observation = observation
-
-	decision, err := tc.DecideUUIDAggregate(aggregatePlan, aggregateObservation, options.rateBytes)
-	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to decide shared uuid aggregate action: %w", err)
-	}
-
-	report.Decision = limitDecisionReport{
-		Kind:   decision.Kind,
-		Reason: decision.Reason,
-	}
-	aggregateReport.Decision = report.Decision
-	if decision.Kind == limiter.DecisionNoOp {
-		return report, nil
-	}
-
-	planInput.CleanupRootQDisc = options.operation == limitOperationRemove && observation.CleanupRootQDisc
-	aggregatePlan, err = a.planner().PlanUUIDAggregate(planInput)
-	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to build shared uuid aggregate execution plan: %w", err)
-	}
-	if observation.Available {
-		switch options.operation {
-		case limitOperationApply:
-			aggregatePlan, err = tc.AppendUUIDAggregateObservedApplyDelta(aggregatePlan, snapshot, nftSnapshot, options.rateBytes)
-			if err != nil {
-				return limitReport{}, fmt.Errorf("failed to append observed shared uuid apply delta: %w", err)
-			}
-		case limitOperationRemove:
-			aggregatePlan, err = tc.AppendUUIDAggregateObservedAttachmentCleanup(aggregatePlan, snapshot, nftSnapshot)
-			if err != nil {
-				return limitReport{}, fmt.Errorf("failed to append observed shared uuid attachment cleanup: %w", err)
-			}
-		}
-	}
-	populateUUIDAggregateReportFromPlan(aggregateReport, aggregatePlan, membershipObservable)
-	aggregateReport.Plan = &aggregatePlan
-
-	if options.execute &&
-		aggregatePlan.Cardinality != correlation.UUIDAggregateCardinalityZero &&
-		aggregatePlan.AttachmentExecution.Readiness != tc.BindingReadinessReady {
-		report.ExecutionBlocked = true
-		report.ExecutionNote = blockedUUIDAggregateExecutionNote(aggregatePlan)
-		aggregateReport.ExecutionBlocked = true
-		aggregateReport.ExecutionNote = report.ExecutionNote
-		return report, errors.New(report.ExecutionNote)
-	}
-
-	if options.execute && !observation.Reconcilable && !options.allowMissingTCState {
-		report.ExecutionBlocked = true
-		if uuidAggregateNeedsObservedMarkAttachmentState(aggregatePlan, snapshot) {
-			report.ExecutionNote = missingObservedMarkAttachmentExecutionNote(observation)
-		} else {
-			report.ExecutionNote = missingObservedStateExecutionNote(observation)
-		}
-		aggregateReport.ExecutionBlocked = true
-		aggregateReport.ExecutionNote = report.ExecutionNote
-		return report, errors.New(report.ExecutionNote)
-	}
-
-	if !options.execute {
-		return report, nil
-	}
-
-	results, execErr := tc.NewExecutor(a.tcRunner, false, a.privilegeStatus).ExecuteUUIDAggregate(ctx, aggregatePlan)
-	report.Results = results
-	aggregateReport.Results = results
-	if execErr != nil {
-		if len(results) == 0 {
-			report.ExecutionBlocked = true
-			report.ExecutionNote = execErr.Error()
-			aggregateReport.ExecutionBlocked = true
-			aggregateReport.ExecutionNote = execErr.Error()
-		}
-		return report, fmt.Errorf("shared uuid aggregate execution failed: %w", execErr)
-	}
-
-	return report, nil
-}
-
 func (a App) limitState(session discovery.Session, target limitTargetSelection, options limitOptions) (limiter.Subject, *limiter.DesiredState, error) {
-	subject, err := limiter.SubjectFromSession(target.Kind(), session)
+	targetRule, err := target.policyTarget()
+	if err != nil {
+		return limiter.Subject{}, nil, fmt.Errorf("failed to construct policy target: %w", err)
+	}
+
+	subject, err := limiter.SubjectFromTarget(targetRule, session)
 	if err != nil {
 		return limiter.Subject{}, nil, fmt.Errorf("failed to construct limiter subject: %w", err)
 	}
@@ -810,17 +556,18 @@ func (a App) limitState(session discovery.Session, target limitTargetSelection, 
 		return subject, nil, nil
 	}
 
-	targetRule, err := target.policyTarget(session.Runtime)
-	if err != nil {
-		return limiter.Subject{}, nil, fmt.Errorf("failed to construct policy target: %w", err)
+	policyRule := policy.Policy{
+		Name:   "cli-limit-request",
+		Target: targetRule,
+	}
+	if options.unlimited {
+		policyRule.Effect = policy.EffectExclude
+	} else {
+		policyRule.Limits = limitPolicyForDirection(options.direction, options.rateBytes)
 	}
 
 	evaluation, err := (policy.Evaluator{}).Evaluate([]policy.Policy{
-		{
-			Name:   "cli-limit-request",
-			Target: targetRule,
-			Limits: limitPolicyForDirection(options.direction, options.rateBytes),
-		},
+		policyRule,
 	}, session)
 	if err != nil {
 		return limiter.Subject{}, nil, fmt.Errorf("failed to evaluate limit policy: %w", err)
@@ -834,7 +581,7 @@ func (a App) limitState(session discovery.Session, target limitTargetSelection, 
 	return subject, &desired, nil
 }
 
-func (a App) observeLimitState(ctx context.Context, target discovery.RuntimeTarget, subject limiter.Subject, scope tc.Scope, operation limitOperation) (limitObservedState, error) {
+func (a App) observeLimitState(ctx context.Context, target discovery.RuntimeTarget, subject limiter.Subject, desired *limiter.DesiredState, scope tc.Scope, operation limitOperation) (limitObservedState, error) {
 	inspectAction := limiter.Action{
 		Kind:    limiter.ActionInspect,
 		Subject: subject,
@@ -843,6 +590,17 @@ func (a App) observeLimitState(ctx context.Context, target discovery.RuntimeTarg
 	inspectPlan, err := a.planWithAttachments(ctx, target, inspectAction, scope)
 	if err != nil {
 		return limitObservedState{}, err
+	}
+	if desired != nil {
+		mode := desired.Mode
+		execution, err := tc.BuildDirectAttachmentExecution(inspectPlan.Binding, scope, mode, inspectAttachmentClassID(mode, inspectPlan.Handles.ClassID))
+		if err != nil {
+			return limitObservedState{}, err
+		}
+		inspectPlan.AttachmentExecution = execution
+		if err := inspectPlan.Validate(); err != nil {
+			return limitObservedState{}, err
+		}
 	}
 
 	observation := limitObservationReport{
@@ -872,46 +630,28 @@ func (a App) observeLimitState(ctx context.Context, target discovery.RuntimeTarg
 		observation.Reconcilable = false
 		observation.Error = attachmentObservation.Error
 	}
-	if operation == limitOperationRemove {
-		switch {
-		case inspectPlan.MarkAttachment != nil && inspectPlan.MarkAttachment.Readiness == tc.BindingReadinessReady:
-			observation.CleanupRootQDisc = snapshot.EligibleForRootQDiscCleanupAfterMarkAttachmentRemoval(
-				inspectPlan.Handles.RootHandle,
-				observation.ExpectedClassID,
-				*inspectPlan.MarkAttachment,
-			)
-		case inspectPlan.AttachmentExecution.Readiness == tc.BindingReadinessReady:
-			observation.CleanupRootQDisc = snapshot.EligibleForRootQDiscCleanupAfterDirectAttachmentRemoval(
-				inspectPlan.Handles.RootHandle,
-				observation.ExpectedClassID,
-				inspectPlan.AttachmentExecution,
-			)
-		}
-	}
+
+	applied := make([]limiter.AppliedState, 0, 2)
 
 	class, ok := snapshot.Class(observation.ExpectedClassID)
-	if !ok {
-		return limitObservedState{
-			Observation: observation,
-			InspectPlan: inspectPlan,
-			TCSnapshot:  snapshot,
-			NFTSnapshot: attachmentObservation.NFTSnapshot,
-		}, nil
-	}
+	if ok {
+		observation.Matched = true
+		observation.ObservedClassID = class.ClassID
 
-	observation.Matched = true
-	observation.ObservedClassID = class.ClassID
-	if operation == limitOperationRemove &&
-		!observation.CleanupRootQDisc &&
-		!(inspectPlan.MarkAttachment != nil && inspectPlan.MarkAttachment.Readiness == tc.BindingReadinessReady) &&
-		inspectPlan.AttachmentExecution.Readiness != tc.BindingReadinessReady {
-		observation.CleanupRootQDisc = snapshot.EligibleForRootQDiscCleanup(inspectPlan.Handles.RootHandle, observation.ExpectedClassID)
-	}
+		limitApplied, err := class.AppliedState(subject, scope.Direction)
+		if err != nil {
+			if operation == limitOperationRemove {
+				observation.Error = fmt.Sprintf("observed class %s could not be fully parsed: %v", class.ClassID, err)
+				return limitObservedState{
+					Observation: observation,
+					InspectPlan: inspectPlan,
+					TCSnapshot:  snapshot,
+					NFTSnapshot: attachmentObservation.NFTSnapshot,
+				}, nil
+			}
 
-	applied, err := class.AppliedState(subject, scope.Direction)
-	if err != nil {
-		if operation == limitOperationRemove {
-			observation.Error = fmt.Sprintf("observed class %s could not be fully parsed: %v", class.ClassID, err)
+			observation.Reconcilable = false
+			observation.Error = fmt.Sprintf("observed class %s could not be reconciled: %v", class.ClassID, err)
 			return limitObservedState{
 				Observation: observation,
 				InspectPlan: inspectPlan,
@@ -920,22 +660,64 @@ func (a App) observeLimitState(ctx context.Context, target discovery.RuntimeTarg
 			}, nil
 		}
 
-		observation.Reconcilable = false
-		observation.Error = fmt.Sprintf("observed class %s could not be reconciled: %v", class.ClassID, err)
-		return limitObservedState{
-			Observation: observation,
-			InspectPlan: inspectPlan,
-			TCSnapshot:  snapshot,
-			NFTSnapshot: attachmentObservation.NFTSnapshot,
-		}, nil
+		applied = append(applied, limitApplied)
+		observation.ObservedRateBytes = observedRateBytes(limitApplied, scope.Direction)
 	}
 
-	observation.ObservedRateBytes = observedRateBytes(applied, scope.Direction)
+	unlimitedApplied, hasUnlimited, err := observedUnlimitedAppliedState(subject, inspectPlan.Binding, scope, inspectPlan.Handles.RootHandle, snapshot)
+	if err != nil {
+		return limitObservedState{}, err
+	}
+	if hasUnlimited {
+		applied = append(applied, unlimitedApplied)
+	}
+	if operation == limitOperationRemove {
+		comparable, matched, err := observedRemoveDirectAttachmentMatch(subject, inspectPlan.Binding, scope, inspectPlan.Handles.RootHandle, inspectPlan.Handles.ClassID, snapshot)
+		if err != nil {
+			return limitObservedState{}, err
+		}
+		if comparable {
+			observation.AttachmentMatched = boolPtr(matched)
+		}
+	}
+
+	if operation == limitOperationRemove {
+		switch {
+		case inspectPlan.MarkAttachment != nil && inspectPlan.MarkAttachment.Readiness == tc.BindingReadinessReady:
+			observation.CleanupRootQDisc = snapshot.EligibleForRootQDiscCleanupAfterMarkAttachmentRemoval(
+				inspectPlan.Handles.RootHandle,
+				observation.ExpectedClassID,
+				*inspectPlan.MarkAttachment,
+			)
+		case containsAppliedMode(applied, limiter.DesiredModeLimit):
+			limitExecution, err := tc.BuildDirectAttachmentExecution(inspectPlan.Binding, scope, limiter.DesiredModeLimit, inspectPlan.Handles.ClassID)
+			if err != nil {
+				return limitObservedState{}, err
+			}
+			observation.CleanupRootQDisc = snapshot.EligibleForRootQDiscCleanupAfterDirectAttachmentRemoval(
+				inspectPlan.Handles.RootHandle,
+				observation.ExpectedClassID,
+				limitExecution,
+			)
+		case containsAppliedMode(applied, limiter.DesiredModeUnlimited):
+			unlimitedExecution, err := tc.BuildDirectAttachmentExecution(inspectPlan.Binding, scope, limiter.DesiredModeUnlimited, "")
+			if err != nil {
+				return limitObservedState{}, err
+			}
+			observation.CleanupRootQDisc = snapshot.EligibleForRootQDiscCleanupAfterDirectAttachmentRemoval(
+				inspectPlan.Handles.RootHandle,
+				observation.ExpectedClassID,
+				unlimitedExecution,
+			)
+		case observation.Matched:
+			observation.CleanupRootQDisc = snapshot.EligibleForRootQDiscCleanup(inspectPlan.Handles.RootHandle, observation.ExpectedClassID)
+		}
+	}
 
 	return limitObservedState{
 		Observation: observation,
 		InspectPlan: inspectPlan,
-		Applied:     []limiter.AppliedState{applied},
+		Applied:     applied,
 		TCSnapshot:  snapshot,
 		NFTSnapshot: attachmentObservation.NFTSnapshot,
 	}, nil
@@ -1024,73 +806,6 @@ func attachmentReapplyDecisionReason(subject limiter.Subject) string {
 	}
 }
 
-func (a App) correlator() uuidCorrelator {
-	if a.uuidCorrelator != nil {
-		return a.uuidCorrelator
-	}
-
-	return correlation.UUIDResolver{
-		Provider: discovery.NewXraySessionEvidenceProvider(a.discovery),
-	}
-}
-
-func (a App) limitCorrelation(ctx context.Context, runtime discovery.SessionRuntime, options limitOptions) (correlation.UUIDResult, limitCorrelationReport, error) {
-	if options.target.Kind() != policy.TargetKindUUID {
-		return correlation.UUIDResult{}, limitCorrelationReport{}, nil
-	}
-
-	result, err := a.correlator().Correlate(ctx, correlation.UUIDRequest{
-		UUID:    options.target.Value(),
-		Runtime: runtime,
-	})
-	if err != nil {
-		return correlation.UUIDResult{}, limitCorrelationReport{}, fmt.Errorf("failed to correlate uuid target: %w", err)
-	}
-
-	report := limitCorrelationReport{
-		Scope:               result.Scope,
-		Status:              result.Status,
-		MatchedSessionCount: result.MatchedSessionCount(),
-		Sessions:            append([]discovery.Session(nil), result.Sessions...),
-		Note:                result.Note,
-	}
-
-	return result, report, nil
-}
-
-func uuidAggregateOperation(operation limitOperation) tc.UUIDAggregateOperation {
-	switch operation {
-	case limitOperationRemove:
-		return tc.UUIDAggregateOperationRemove
-	default:
-		return tc.UUIDAggregateOperationApply
-	}
-}
-
-func unavailableUUIDAggregateReason(result correlation.UUIDResult) string {
-	if note := strings.TrimSpace(result.Note); note != "" {
-		return note
-	}
-
-	return "shared UUID aggregate planning requires trustworthy live membership evidence before one shared tc class can be applied or removed"
-}
-
-func unavailableUUIDAggregateRemovePlanningNote() string {
-	return "live aggregate membership is unavailable; remove planning falls back to the deterministic shared class identity and observed tc state only"
-}
-
-func unavailableUUIDAggregateRemoveAttachmentNote() string {
-	return "live aggregate membership is unavailable; current member attachments cannot be derived during remove fallback"
-}
-
-func unavailableUUIDAggregateRemoveAttachmentExecutionNote() string {
-	return "live aggregate membership is unavailable; concrete member attachment rules cannot be derived during remove fallback"
-}
-
-func blockedConnectionApplyExecutionNote() string {
-	return "real connection apply execution remains unavailable until a trustworthy runtime-aware traffic classifier exists; previewed tc class shaping cannot be attached to the selected connection"
-}
-
 func blockedInboundApplyExecutionNote(plan tc.Plan) string {
 	if plan.MarkAttachment != nil && strings.TrimSpace(plan.MarkAttachment.Reason) != "" {
 		return fmt.Sprintf("real inbound apply execution requires one concrete inbound mark-backed attachment path; %s", strings.TrimSpace(plan.MarkAttachment.Reason))
@@ -1121,69 +836,6 @@ func blockedOutboundRemoveExecutionNote(plan tc.Plan) string {
 	}
 
 	return "real outbound remove execution requires the same concrete outbound mark-backed attachment path used for apply cleanup"
-}
-
-func blockedUUIDAggregateExecutionNote(plan tc.UUIDAggregatePlan) string {
-	reason := strings.TrimSpace(plan.AttachmentExecution.Reason)
-	base := "real shared uuid aggregate execution remains blocked unless the aggregate has either concrete attachable client-ip evidence for every live member or fresh safe RoutingService-backed non-ip attachment evidence"
-	future := "stale, partial, missing, or unsupported non-ip evidence still remains blocked, and broader backend coverage remains future work"
-	if reason == "" {
-		return fmt.Sprintf("%s; %s", base, future)
-	}
-
-	return fmt.Sprintf("%s; %s; %s", base, future, reason)
-}
-
-func uuidAggregateMembershipForReport(runtime discovery.SessionRuntime, uuid string, result correlation.UUIDResult, operation limitOperation) (correlation.UUIDAggregateMembership, bool, error) {
-	subject := correlation.UUIDAggregateSubject{
-		UUID:    uuid,
-		Runtime: runtime,
-	}
-	if result.Status == correlation.UUIDStatusUnavailable && operation == limitOperationRemove {
-		membership, err := correlation.NewUUIDAggregateMembership(subject, nil)
-		return membership, false, err
-	}
-
-	membership, err := correlation.NewUUIDAggregateMembership(subject, result.Sessions)
-	return membership, true, err
-}
-
-func populateUUIDAggregateReportFromPlan(report *limitUUIDAggregateReport, plan tc.UUIDAggregatePlan, membershipObservable bool) {
-	report.SharedClassID = plan.Handles.ClassID
-	report.ShapingIdentity = plan.Binding.Identity.Value
-	report.ShapingReadiness = plan.Binding.ShapingReadiness
-	report.Confidence = plan.Binding.Confidence
-
-	if membershipObservable {
-		report.MemberCount = plan.Membership.MemberCount()
-		report.Cardinality = plan.Cardinality
-		report.AttachmentReadiness = plan.Binding.AttachmentReadiness
-		report.AttachmentExecutionReadiness = plan.AttachmentExecution.Readiness
-		report.AttachmentExecutionBackend = plan.AttachmentExecution.Backend
-		if plan.Binding.Reason != "" {
-			report.Note = strings.TrimSpace(plan.Binding.Reason)
-		}
-		report.AttachmentNote = strings.TrimSpace(plan.Attachments.Reason)
-		report.AttachmentExecutionNote = strings.TrimSpace(plan.AttachmentExecution.Reason)
-		report.MemberAttachability = append([]tc.UUIDAggregateMemberAttachability(nil), plan.Attachability.Members...)
-		report.Attachments = append([]tc.UUIDAggregateMemberAttachment(nil), plan.Attachments.Members...)
-		report.AttachmentExecution = append([]tc.UUIDAggregateAttachmentRule(nil), plan.AttachmentExecution.Rules...)
-		report.MarkAttachmentExecution = append([]tc.MarkAttachmentExecution(nil), plan.AttachmentExecution.MarkAttachments...)
-		return
-	}
-
-	report.MemberCount = 0
-	report.Cardinality = ""
-	report.AttachmentReadiness = tc.BindingReadinessUnavailable
-	report.AttachmentExecutionReadiness = tc.BindingReadinessUnavailable
-	report.AttachmentExecutionBackend = ""
-	report.Note = unavailableUUIDAggregateRemovePlanningNote()
-	report.AttachmentNote = unavailableUUIDAggregateRemoveAttachmentNote()
-	report.AttachmentExecutionNote = unavailableUUIDAggregateRemoveAttachmentExecutionNote()
-	report.MemberAttachability = nil
-	report.Attachments = nil
-	report.AttachmentExecution = nil
-	report.MarkAttachmentExecution = nil
 }
 
 func (a App) planner() tcPlanner {
@@ -1224,29 +876,6 @@ func (a App) outboundSelectorDeriver() outboundMarkSelectorDeriver {
 	}
 
 	return discovery.NewOutboundMarkSelectorDeriver()
-}
-
-func (a App) uuidNonIPBackendDeriver() uuidNonIPBackendCandidateDeriver {
-	if a.uuidNonIPBackend != nil {
-		return a.uuidNonIPBackend
-	}
-
-	return discovery.NewUUIDNonIPBackendCandidateDeriver()
-}
-
-func (a App) uuidRoutingEvidenceProvider() uuidRoutingEvidenceProvider {
-	if a.uuidRoutingEvidence != nil {
-		return a.uuidRoutingEvidence
-	}
-	if a.uuidNonIPBackend != nil {
-		return nil
-	}
-
-	return discovery.NewXrayUUIDRoutingEvidenceProvider(a.discovery)
-}
-
-func uuidRoutingEvidencePolicy() discovery.RuntimeEvidencePolicy {
-	return discovery.RuntimeEvidencePolicy{FreshTTL: 30 * time.Second}
 }
 
 func (a App) planWithAttachments(ctx context.Context, target discovery.RuntimeTarget, action limiter.Action, scope tc.Scope) (tc.Plan, error) {
@@ -1388,85 +1017,75 @@ func planHasStepNamed(steps []tc.Step, name string) bool {
 	return false
 }
 
-func (a App) observeUUIDAggregateState(ctx context.Context, plan tc.UUIDAggregatePlan) (limitObservationReport, tc.UUIDAggregateObservation, tc.Snapshot, *tc.NftablesSnapshot, error) {
-	observation := limitObservationReport{
-		ExpectedClassID: plan.Handles.ClassID,
+func inspectAttachmentClassID(mode limiter.DesiredMode, classID string) string {
+	if mode == limiter.DesiredModeUnlimited {
+		return ""
 	}
 
-	snapshot, _, inspectErr := a.inspector().Inspect(ctx, tc.InspectRequest{Device: plan.Scope.Device})
-	if inspectErr != nil {
-		observation.Error = fmt.Sprintf("tc state inspection failed: %v", inspectErr)
-		return observation, tc.UUIDAggregateObservation{}, tc.Snapshot{}, nil, nil
-	}
-
-	var nftSnapshot *tc.NftablesSnapshot
-	if uuidAggregateShouldInspectNFTState(plan) {
-		observedNFT, _, inspectErr := a.nftablesInspector().Inspect(ctx)
-		if inspectErr != nil {
-			if uuidAggregateNeedsObservedMarkAttachmentState(plan, snapshot) {
-				observation.Available = true
-				observation.Reconcilable = false
-				observation.Error = fmt.Sprintf("nftables state inspection failed: %v", inspectErr)
-				return observation, tc.UUIDAggregateObservation{
-					Available:       true,
-					Reconcilable:    false,
-					ExpectedClassID: plan.Handles.ClassID,
-					Error:           observation.Error,
-				}, snapshot, nil, nil
-			}
-		} else {
-			nftSnapshot = &observedNFT
-		}
-	}
-
-	aggregateObservation, err := tc.ObserveUUIDAggregate(snapshot, nftSnapshot, plan)
-	if err != nil {
-		return limitObservationReport{}, tc.UUIDAggregateObservation{}, tc.Snapshot{}, nil, err
-	}
-
-	observation.Available = aggregateObservation.Available
-	observation.Reconcilable = aggregateObservation.Reconcilable
-	observation.Matched = aggregateObservation.Matched
-	if aggregateObservation.AttachmentComparable {
-		observation.AttachmentMatched = boolPtr(aggregateObservation.AttachmentMatched)
-	}
-	observation.CleanupRootQDisc = aggregateObservation.CleanupRootQDisc
-	observation.ExpectedClassID = aggregateObservation.ExpectedClassID
-	observation.ObservedClassID = aggregateObservation.ObservedClassID
-	observation.ObservedRateBytes = aggregateObservation.ObservedRateBytesPerSecond
-	observation.Error = aggregateObservation.Error
-
-	return observation, aggregateObservation, snapshot, nftSnapshot, nil
+	return classID
 }
 
-func uuidAggregateShouldInspectNFTState(plan tc.UUIDAggregatePlan) bool {
-	return len(plan.AttachmentExecution.MarkAttachments) != 0 || plan.Operation == tc.UUIDAggregateOperationRemove
-}
-
-func uuidAggregateNeedsObservedMarkAttachmentState(plan tc.UUIDAggregatePlan, snapshot tc.Snapshot) bool {
-	if len(plan.AttachmentExecution.MarkAttachments) != 0 {
-		return true
-	}
-	if plan.Operation != tc.UUIDAggregateOperationRemove {
-		return false
-	}
-
-	rootHandle := strings.TrimSpace(plan.Handles.RootHandle)
-	classID := strings.TrimSpace(plan.Handles.ClassID)
-	for _, filter := range snapshot.Filters {
-		if strings.TrimSpace(filter.Kind) != "fw" {
-			continue
+func containsAppliedMode(applied []limiter.AppliedState, mode limiter.DesiredMode) bool {
+	for _, state := range applied {
+		if state.Mode == mode {
+			return true
 		}
-		if strings.TrimSpace(filter.Parent) != rootHandle {
-			continue
-		}
-		if strings.TrimSpace(filter.FlowID) != classID {
-			continue
-		}
-		return true
 	}
 
 	return false
+}
+
+func observedUnlimitedAppliedState(subject limiter.Subject, binding tc.Binding, scope tc.Scope, rootHandle string, snapshot tc.Snapshot) (limiter.AppliedState, bool, error) {
+	if subject.Kind != policy.TargetKindIP || subject.All {
+		return limiter.AppliedState{}, false, nil
+	}
+
+	execution, err := tc.BuildDirectAttachmentExecution(binding, scope, limiter.DesiredModeUnlimited, "")
+	if err != nil {
+		return limiter.AppliedState{}, false, err
+	}
+	if execution.Readiness != tc.BindingReadinessReady {
+		return limiter.AppliedState{}, false, nil
+	}
+
+	filters := snapshot.DirectAttachmentFilters(rootHandle, "", execution)
+	if len(filters) == 0 {
+		return limiter.AppliedState{}, false, nil
+	}
+
+	applied := limiter.AppliedState{
+		Mode:    limiter.DesiredModeUnlimited,
+		Subject: subject,
+		Driver:  "tc",
+	}
+	if err := applied.Validate(); err != nil {
+		return limiter.AppliedState{}, false, err
+	}
+
+	return applied, true, nil
+}
+
+func observedRemoveDirectAttachmentMatch(subject limiter.Subject, binding tc.Binding, scope tc.Scope, rootHandle string, classID string, snapshot tc.Snapshot) (bool, bool, error) {
+	if subject.Kind != policy.TargetKindIP || subject.All {
+		return false, false, nil
+	}
+
+	comparable := false
+	for _, mode := range []limiter.DesiredMode{limiter.DesiredModeUnlimited, limiter.DesiredModeLimit} {
+		execution, err := tc.BuildDirectAttachmentExecution(binding, scope, mode, inspectAttachmentClassID(mode, classID))
+		if err != nil {
+			return false, false, err
+		}
+		if execution.Readiness != tc.BindingReadinessReady {
+			continue
+		}
+		comparable = true
+		if len(snapshot.DirectAttachmentFilters(rootHandle, inspectAttachmentClassID(mode, classID), execution)) != 0 {
+			return true, true, nil
+		}
+	}
+
+	return comparable, false, nil
 }
 
 func limitMode(execute bool) string {
@@ -1486,20 +1105,6 @@ func countSelections(active ...bool) int {
 	}
 
 	return count
-}
-
-func limitUUIDModeForOptions(options limitOptions) limitUUIDMode {
-	if options.target.Kind() != policy.TargetKindUUID {
-		return ""
-	}
-	return limitUUIDModeAggregateSharedPool
-}
-
-func limitUUIDModeNote(options limitOptions) string {
-	if options.target.Kind() != policy.TargetKindUUID {
-		return ""
-	}
-	return "plain --uuid uses the shared UUID aggregate pool path; concrete execution is available when every live member is attachable by client IP, including native IPv6 and IPv4-mapped IPv6 after canonicalization, and the current non-ip extension now adds fresh RoutingService-backed socket-tuple mark classification in two safe scopes: upload by exact-user local socket tuple and download by exact-user client socket tuple, both without falling back to shared client IP. Stale, partial, or unsupported routing evidence remains blocked, and broader remote-target or metadata-only routing contexts still remain future backend work until a safe exact-user remote-socket classifier exists"
 }
 
 func limitPolicyForDirection(direction tc.Direction, rateBytes int64) policy.LimitPolicy {
@@ -1531,7 +1136,7 @@ func removeLimitDecision(subject limiter.Subject, observation limitObservationRe
 			decision := limiter.Decision{
 				Kind:    limiter.DecisionRemove,
 				Subject: &subject,
-				Reason:  "matching applied state was observed for the selected target limit",
+				Reason:  "matching class-backed state was observed for the selected target rule set",
 			}
 			if err := decision.Validate(); err != nil {
 				return limiter.Decision{}, err
@@ -1541,7 +1146,7 @@ func removeLimitDecision(subject limiter.Subject, observation limitObservationRe
 			decision := limiter.Decision{
 				Kind:    limiter.DecisionRemove,
 				Subject: &subject,
-				Reason:  "managed direct attachment rules were observed for the selected target limit",
+				Reason:  "managed attachment rules were observed for the selected target rule set",
 			}
 			if err := decision.Validate(); err != nil {
 				return limiter.Decision{}, err
@@ -1551,7 +1156,7 @@ func removeLimitDecision(subject limiter.Subject, observation limitObservationRe
 			decision := limiter.Decision{
 				Kind:    limiter.DecisionNoOp,
 				Subject: &subject,
-				Reason:  "no applied state matching the selected target limit was observed",
+				Reason:  "no applied state matching the selected target rule set was observed",
 			}
 			if err := decision.Validate(); err != nil {
 				return limiter.Decision{}, err
@@ -1715,225 +1320,24 @@ func writeLimitText(w io.Writer, report limitReport) {
 	_, _ = fmt.Fprintf(w, "Mode: %s\n", report.Mode)
 	_, _ = fmt.Fprintf(w, "Operation: %s\n", report.Operation)
 	_, _ = fmt.Fprintf(w, "Runtime: %s\n", describeLimitRuntime(report.Runtime))
-	_, _ = fmt.Fprintf(w, "Target: %s %s\n", report.TargetKind, report.TargetValue)
-	if report.UUIDMode != "" {
-		_, _ = fmt.Fprintf(w, "UUID mode: %s\n", report.UUIDMode)
-	}
-	if report.UUIDModeNote != "" {
-		_, _ = fmt.Fprintf(w, "UUID mode note: %s\n", report.UUIDModeNote)
-	}
-	if report.Correlation.hasData() {
-		_, _ = fmt.Fprintf(w, "Correlation scope: %s\n", report.Correlation.Scope)
-		_, _ = fmt.Fprintf(w, "Correlation status: %s\n", report.Correlation.Status)
-		_, _ = fmt.Fprintf(w, "Matched sessions: %d\n", report.Correlation.MatchedSessionCount)
-		if report.Correlation.Note != "" {
-			_, _ = fmt.Fprintf(w, "Correlation note: %s\n", report.Correlation.Note)
-		}
-		if len(report.Correlation.Sessions) != 0 {
-			_, _ = io.WriteString(w, "Correlated sessions:\n")
-			for index, session := range report.Correlation.Sessions {
-				label := strings.TrimSpace(session.ID)
-				if label == "" {
-					label = fmt.Sprintf("session-%d", index+1)
-				}
-				_, _ = fmt.Fprintf(w, "  %d. %s", index+1, label)
-				if session.Client.IP != "" {
-					_, _ = fmt.Fprintf(w, " ip=%s", session.Client.IP)
-				}
-				if session.Route.InboundTag != "" {
-					_, _ = fmt.Fprintf(w, " inbound=%s", session.Route.InboundTag)
-				}
-				if session.Route.OutboundTag != "" {
-					_, _ = fmt.Fprintf(w, " outbound=%s", session.Route.OutboundTag)
-				}
-				_, _ = io.WriteString(w, "\n")
-			}
-		}
-	}
+	_, _ = fmt.Fprintf(w, "Target: %s %s\n", report.TargetKind, describeLimitTargetValue(report.TargetKind, report.TargetValue))
 	if report.PolicyEvaluation != nil && report.PolicyEvaluation.hasCoexistence() {
 		writeTextSectionHeading(w, "Policy")
 		writeLimitPolicyEvaluationText(w, "", *report.PolicyEvaluation)
 	}
 	writeTextSectionHeading(w, "Requested state")
-	writeRequestedLimitText(w, report.Operation, report.Scope, report.RateBytes)
+	writeRequestedLimitText(w, report.Operation, report.Scope, report.RateBytes, report.Unlimited)
 	if report.DirectAttachment != nil && report.DirectAttachment.hasData() {
 		writeTextSectionHeading(w, "Direct attachment")
 		writeDirectAttachmentText(w, *report.DirectAttachment)
 	}
-	if report.UUIDAggregate != nil {
-		aggregate := report.UUIDAggregate
-		writeTextSectionHeading(w, "UUID aggregate")
-		_, _ = fmt.Fprintf(w, "UUID aggregate mode: %s\n", aggregate.Mode)
-		if aggregate.Cardinality != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate membership: %s (%d member(s))\n", aggregate.Cardinality, aggregate.MemberCount)
-		} else {
-			_, _ = io.WriteString(w, "Aggregate membership: unavailable\n")
-		}
-		if aggregate.SharedClassID != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate class ID: %s\n", aggregate.SharedClassID)
-		}
-		if aggregate.ShapingIdentity != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate shaping identity: %s\n", aggregate.ShapingIdentity)
-		}
-		if aggregate.ShapingReadiness != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate shaping readiness: %s\n", aggregate.ShapingReadiness)
-		}
-		if aggregate.AttachmentReadiness != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate attachment readiness: %s\n", aggregate.AttachmentReadiness)
-		}
-		if aggregate.AttachmentExecutionReadiness != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate attachment execution readiness: %s\n", aggregate.AttachmentExecutionReadiness)
-		}
-		if aggregate.AttachmentExecutionBackend != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate attachment execution backend: %s\n", aggregate.AttachmentExecutionBackend)
-		}
-		if aggregate.Confidence != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate confidence: %s\n", aggregate.Confidence)
-		}
-		if aggregate.Note != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate note: %s\n", aggregate.Note)
-		}
-		if aggregate.AttachmentNote != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate attachment note: %s\n", aggregate.AttachmentNote)
-		}
-		if aggregate.AttachmentExecutionNote != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate attachment execution note: %s\n", aggregate.AttachmentExecutionNote)
-		}
-		if len(aggregate.MemberAttachability) != 0 {
-			_, _ = io.WriteString(w, "Aggregate member attachability:\n")
-			for index, member := range aggregate.MemberAttachability {
-				label := strings.TrimSpace(member.Member.Session.ID)
-				if label == "" {
-					label = fmt.Sprintf("member-%d", index+1)
-				}
-				_, _ = fmt.Fprintf(w, "  %d. %s -> %s\n", index+1, label, member.Status)
-				if member.RawClientIP != "" {
-					_, _ = fmt.Fprintf(w, "     raw ip=%s\n", member.RawClientIP)
-				}
-				if member.CanonicalClientIP != "" {
-					_, _ = fmt.Fprintf(w, "     canonical ip=%s\n", member.CanonicalClientIP)
-				}
-				if member.Reason != "" {
-					_, _ = fmt.Fprintf(w, "     Attachability note: %s\n", member.Reason)
-				}
-			}
-		}
-		if aggregate.NonIPBackend != nil {
-			_, _ = fmt.Fprintf(w, "Aggregate non-IP backend status: %s\n", aggregate.NonIPBackend.Status)
-			if aggregate.NonIPBackend.Kind != "" {
-				_, _ = fmt.Fprintf(w, "Aggregate non-IP backend kind: %s\n", aggregate.NonIPBackend.Kind)
-			}
-			if len(aggregate.NonIPBackend.OutboundTags) != 0 {
-				_, _ = fmt.Fprintf(w, "Aggregate non-IP backend outbound tags: %s\n", strings.Join(aggregate.NonIPBackend.OutboundTags, ", "))
-			}
-			if aggregate.NonIPBackend.Reason != "" {
-				_, _ = fmt.Fprintf(w, "Aggregate non-IP backend note: %s\n", aggregate.NonIPBackend.Reason)
-			}
-		}
-		if aggregate.RoutingEvidenceState != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate routing evidence state: %s\n", aggregate.RoutingEvidenceState)
-		}
-		if aggregate.RoutingEvidenceFreshness != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate routing evidence freshness: %s\n", aggregate.RoutingEvidenceFreshness)
-		}
-		if aggregate.RoutingEvidenceNote != "" {
-			_, _ = fmt.Fprintf(w, "Aggregate routing evidence note: %s\n", aggregate.RoutingEvidenceNote)
-		}
-		if len(aggregate.Attachments) != 0 {
-			_, _ = io.WriteString(w, "Aggregate member attachments:\n")
-			for index, attachment := range aggregate.Attachments {
-				label := strings.TrimSpace(attachment.Member.Session.ID)
-				if label == "" {
-					label = fmt.Sprintf("member-%d", index+1)
-				}
-				_, _ = fmt.Fprintf(
-					w,
-					"  %d. %s -> %s via %s %s (%s)\n",
-					index+1,
-					label,
-					attachment.AggregateClassID,
-					attachment.Identity.Kind,
-					attachment.Identity.Value,
-					attachment.Readiness,
-				)
-				if attachment.Member.Session.Client.IP != "" {
-					_, _ = fmt.Fprintf(w, "     ip=%s\n", attachment.Member.Session.Client.IP)
-				}
-				if attachment.Member.Session.Route.InboundTag != "" {
-					_, _ = fmt.Fprintf(w, "     inbound=%s\n", attachment.Member.Session.Route.InboundTag)
-				}
-				if attachment.Member.Session.Route.OutboundTag != "" {
-					_, _ = fmt.Fprintf(w, "     outbound=%s\n", attachment.Member.Session.Route.OutboundTag)
-				}
-				if attachment.Reason != "" {
-					_, _ = fmt.Fprintf(w, "     Attachment note: %s\n", attachment.Reason)
-				}
-			}
-		}
-		if len(aggregate.AttachmentExecution) != 0 {
-			_, _ = io.WriteString(w, "Aggregate attachment execution rules:\n")
-			for index, rule := range aggregate.AttachmentExecution {
-				covers := strings.Join(rule.MemberSessionIDs, ", ")
-				_, prefixLength := describeClientIPIdentity(rule.Identity.Value)
-				_, _ = fmt.Fprintf(
-					w,
-					"  %d. %s %s/%d -> %s match %s pref %d (%s)\n",
-					index+1,
-					rule.Identity.Kind,
-					rule.Identity.Value,
-					prefixLength,
-					rule.AggregateClassID,
-					rule.MatchField,
-					rule.Preference,
-					rule.Readiness,
-				)
-				if covers != "" {
-					_, _ = fmt.Fprintf(w, "     covers=%s\n", covers)
-				}
-				if rule.Reason != "" {
-					_, _ = fmt.Fprintf(w, "     Execution note: %s\n", rule.Reason)
-				}
-			}
-		}
-		if len(aggregate.MarkAttachmentExecution) != 0 {
-			_, _ = io.WriteString(w, "Aggregate mark-backed attachment execution rules:\n")
-			for index, execution := range aggregate.MarkAttachmentExecution {
-				_, _ = fmt.Fprintf(
-					w,
-					"  %d. %s pref %d mark 0x%x -> %s (%s)\n",
-					index+1,
-					execution.Rule.Selector.Description,
-					execution.Filter.Preference,
-					execution.Filter.Mark,
-					execution.Filter.ClassID,
-					execution.Readiness,
-				)
-				if execution.Reason != "" {
-					_, _ = fmt.Fprintf(w, "     Execution note: %s\n", execution.Reason)
-				}
-			}
-		}
-		writeTextSectionHeading(w, "Observation")
-		writeObservationText(w, aggregate.Observation, "Matching aggregate class")
-		writeTextSectionHeading(w, "Decision")
-		writeDecisionText(w, aggregate.Decision)
-		if aggregate.Plan != nil {
-			writeTextSectionHeading(w, "Plan")
-			writePlanText(w, string(aggregate.Plan.Operation), report.Operation, aggregate.Plan.CleanupRootQDisc, "", aggregate.Plan.Steps)
-		}
-		writeTextSectionHeading(w, "Execution")
-		writeExecutionBlockedText(w, aggregate.ExecutionBlocked, aggregate.ExecutionNote)
-		writeExecutionResultsSection(w, aggregate.Results)
-		writeOutcomeSummary(w, report.Mode, aggregate.ExecutionBlocked, aggregate.Plan != nil, false, aggregate.Results)
-		return
-	}
 	writeTextSectionHeading(w, "Observation")
-	writeObservationText(w, report.Observation, "Matching applied state")
+	writeObservationText(w, report.Observation, "Matching class-backed state")
 	writeTextSectionHeading(w, "Decision")
 	writeDecisionText(w, report.Decision)
 	if report.Plan != nil {
 		writeTextSectionHeading(w, "Plan")
-		writePlanText(w, string(report.Plan.Action.Kind), report.Operation, report.Observation.CleanupRootQDisc, report.Plan.Handles.ClassID, report.Plan.Steps)
+		writePlanText(w, string(report.Plan.Action.Kind), report.Operation, report.Observation.CleanupRootQDisc, report.Plan.Handles.ClassID, shouldShowPlanClassID(*report.Plan), report.Plan.Steps)
 	}
 	writeTextSectionHeading(w, "Execution")
 	writeExecutionBlockedText(w, report.ExecutionBlocked, report.ExecutionNote)
@@ -1992,20 +1396,7 @@ func writeDirectAttachmentText(w io.Writer, report limitDirectAttachmentReport) 
 	if len(report.AttachmentExecution) != 0 {
 		_, _ = io.WriteString(w, "Direct attachment execution rules:\n")
 		for index, rule := range report.AttachmentExecution {
-			protocol, prefixLength := describeDirectAttachmentRule(rule)
-			_, _ = fmt.Fprintf(
-				w,
-				"  %d. %s %s/%d -> %s protocol %s match %s pref %d (%s)\n",
-				index+1,
-				rule.Identity.Kind,
-				rule.Identity.Value,
-				prefixLength,
-				rule.ClassID,
-				protocol,
-				rule.MatchField,
-				rule.Preference,
-				rule.Readiness,
-			)
+			_, _ = fmt.Fprintf(w, "  %d. %s\n", index+1, describeDirectAttachmentRule(rule))
 			if rule.Reason != "" {
 				_, _ = fmt.Fprintf(w, "     Execution note: %s\n", rule.Reason)
 			}
@@ -2013,8 +1404,20 @@ func writeDirectAttachmentText(w io.Writer, report limitDirectAttachmentReport) 
 	}
 }
 
-func describeDirectAttachmentRule(rule tc.DirectAttachmentRule) (string, int) {
-	return describeClientIPIdentity(rule.Identity.Value)
+func describeDirectAttachmentRule(rule tc.DirectAttachmentRule) string {
+	base := fmt.Sprintf("%s pref %d (%s)", rule.Classifier, rule.Preference, rule.Readiness)
+	switch rule.Classifier {
+	case tc.DirectAttachmentClassifierMatchAll:
+		return fmt.Sprintf("%s all client IPs -> %s", base, rule.ClassID)
+	case tc.DirectAttachmentClassifierU32:
+		protocol, prefixLength := describeClientIPIdentity(rule.Identity.Value)
+		if rule.Disposition == tc.DirectAttachmentDispositionPass {
+			return fmt.Sprintf("%s %s %s/%d match %s -> pass", base, rule.Identity.Kind, rule.Identity.Value, prefixLength, rule.MatchField)
+		}
+		return fmt.Sprintf("%s %s %s/%d -> %s protocol %s match %s", base, rule.Identity.Kind, rule.Identity.Value, prefixLength, rule.ClassID, protocol, rule.MatchField)
+	default:
+		return base
+	}
 }
 
 func describeClientIPIdentity(value string) (string, int) {
@@ -2039,9 +1442,13 @@ func writePlanSteps(w io.Writer, steps []tc.Step) {
 	}
 }
 
-func writeRequestedLimitText(w io.Writer, operation limitOperation, scope tc.Scope, rateBytes int64) {
+func writeRequestedLimitText(w io.Writer, operation limitOperation, scope tc.Scope, rateBytes int64, unlimited bool) {
 	if operation == limitOperationRemove {
-		_, _ = fmt.Fprintf(w, "Requested removal: %s limit on %s\n", scope.Direction, scope.Device)
+		_, _ = fmt.Fprintf(w, "Requested removal: explicit %s rule set on %s\n", scope.Direction, scope.Device)
+		return
+	}
+	if unlimited {
+		_, _ = fmt.Fprintf(w, "Requested state: %s unlimited exception on %s\n", scope.Direction, scope.Device)
 		return
 	}
 
@@ -2075,12 +1482,12 @@ func writeDecisionText(w io.Writer, decision limitDecisionReport) {
 	_, _ = fmt.Fprintf(w, "Decision reason: %s\n", decision.Reason)
 }
 
-func writePlanText(w io.Writer, action string, operation limitOperation, cleanupRootQDisc bool, classID string, steps []tc.Step) {
+func writePlanText(w io.Writer, action string, operation limitOperation, cleanupRootQDisc bool, classID string, showClassID bool, steps []tc.Step) {
 	_, _ = fmt.Fprintf(w, "Planned action: %s\n", action)
 	if operation == limitOperationRemove {
 		_, _ = fmt.Fprintf(w, "Cleanup scope: %s\n", cleanupScopeLabel(cleanupRootQDisc, steps))
 	}
-	if classID != "" {
+	if showClassID && classID != "" {
 		_, _ = fmt.Fprintf(w, "Class ID: %s\n", classID)
 	}
 	if len(steps) != 0 {
@@ -2156,6 +1563,14 @@ func removePlanDeletesClass(steps []tc.Step) bool {
 	return false
 }
 
+func shouldShowPlanClassID(plan tc.Plan) bool {
+	if plan.Action.Desired != nil {
+		return plan.Action.Desired.Mode == limiter.DesiredModeLimit
+	}
+
+	return removePlanDeletesClass(plan.Steps)
+}
+
 func writeOutcomeSummary(w io.Writer, mode string, blocked bool, hasPlan bool, noOp bool, results []tc.Result) {
 	_, _ = fmt.Fprintf(w, "Outcome: %s\n", outcomeLabel(mode, blocked, hasPlan, noOp, results))
 
@@ -2184,7 +1599,7 @@ func writeOutcomeSummary(w io.Writer, mode string, blocked bool, hasPlan bool, n
 	}
 
 	if noOp {
-		_, _ = io.WriteString(w, "Local tc state already matches the requested limit.\n")
+		_, _ = io.WriteString(w, "Local tc state already matches the requested state.\n")
 		_, _ = io.WriteString(w, "No commands were executed.\n")
 		return
 	}
@@ -2257,16 +1672,19 @@ func describePolicyMatch(match policy.Match) string {
 }
 
 func describePolicyTargetValue(target policy.Target) string {
-	switch target.Kind {
-	case policy.TargetKindConnection:
-		if target.Connection != nil {
-			return strings.TrimSpace(target.Connection.SessionID)
-		}
-	default:
-		return strings.TrimSpace(target.Value)
+	if target.Kind == policy.TargetKindIP && target.All {
+		return "all"
 	}
 
-	return ""
+	return strings.TrimSpace(target.Value)
+}
+
+func describeLimitTargetValue(kind policy.TargetKind, value string) string {
+	if kind == policy.TargetKindIP && strings.TrimSpace(value) == "" {
+		return "all"
+	}
+
+	return strings.TrimSpace(value)
 }
 
 func describePolicyEffect(effect policy.Effect) string {
@@ -2305,16 +1723,15 @@ func writeLimitHelp(w io.Writer, cmd command) {
 	_, _ = fmt.Fprintf(w, "Usage:\n  %s\n\n", cmd.usage)
 	_, _ = io.WriteString(w, "Plan first by default. Add --execute only when the selected limiter path is concrete and the local environment can apply tc state safely.\n\n")
 	_, _ = io.WriteString(w, "Target selection:\n")
-	_, _ = io.WriteString(w, "  --connection <session-id>         Connection-scoped workflow target\n")
-	_, _ = io.WriteString(w, "  --uuid <uuid>                     UUID-scoped workflow target; one shared aggregate pool on the selected runtime\n")
-	_, _ = io.WriteString(w, "  --ip <ip>                         IPv4 or IPv6 client address target\n")
+	_, _ = io.WriteString(w, "  --ip <ip|all>                     Specific client IP or runtime-local all baseline\n")
 	_, _ = io.WriteString(w, "  --inbound <tag>                   Inbound-scoped target (concrete for one readable concrete TCP listener)\n")
 	_, _ = io.WriteString(w, "  --outbound <tag>                  Outbound-scoped target (concrete when readable Xray config proves one unique non-zero socket mark without proxy or dialer-proxy indirection)\n")
 	_, _ = io.WriteString(w, "\nExecution and output:\n")
 	_, _ = io.WriteString(w, "  --device <device>                 Linux network device to plan against\n")
 	_, _ = io.WriteString(w, "  --direction upload|download       Limit direction\n")
-	_, _ = io.WriteString(w, "  --rate <bytes-per-second>         Rate in bytes per second (required unless --remove)\n")
-	_, _ = io.WriteString(w, "  --remove                          Remove the selected target limit instead of planning a new one\n")
+	_, _ = io.WriteString(w, "  --rate <bytes-per-second>         Rate in bytes per second (required unless --remove or --unlimited)\n")
+	_, _ = io.WriteString(w, "  --unlimited                       Specific-IP no-limit exception that bypasses any matching ip all baseline\n")
+	_, _ = io.WriteString(w, "  --remove                          Remove the selected target rule set instead of planning a new one\n")
 	_, _ = io.WriteString(w, "  --execute                         Perform real local tc execution\n")
 	_, _ = io.WriteString(w, "  --allow-missing-tc-state          Allow real execution when tc state cannot be observed first\n")
 	_, _ = io.WriteString(w, "  --format text|json                Render as text or machine-readable JSON (default: text)\n")
@@ -2325,20 +1742,17 @@ func writeLimitHelp(w io.Writer, cmd command) {
 	_, _ = io.WriteString(w, "  --pid <pid>                       Select a host runtime by process ID\n")
 	_, _ = io.WriteString(w, "  --container <id-or-name>          Select a Docker runtime by container name or ID prefix\n")
 	_, _ = io.WriteString(w, "\nExamples:\n")
+	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip all --device eth0 --direction upload --rate 1048576\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 203.0.113.4 --device eth0 --direction upload --rate 1048576\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 2001:db8::10 --device eth0 --direction download --rate 524288\n", buildinfo.BinaryName)
-	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --uuid user-a --device eth0 --direction upload --rate 1048576\n", buildinfo.BinaryName)
+	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 203.0.113.4 --device eth0 --direction upload --unlimited\n", buildinfo.BinaryName)
+	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --inbound api-in --device eth0 --direction upload --rate 1048576\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --container raylimit-xray-test --outbound proxy --device eth0 --direction upload --rate 262144 --execute\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 203.0.113.4 --device eth0 --direction upload --remove\n", buildinfo.BinaryName)
 	_, _ = io.WriteString(w, "\nRule precedence:\n")
-	_, _ = io.WriteString(w, "  When multiple rule kinds match the same live session, RayLimit keeps the highest-precedence kind only: connection > uuid > ip > inbound > outbound. Within the winning precedence, exclude rules suppress limit rules and multiple winning limit rules merge by taking the tightest upload/download value per direction.\n")
-	_, _ = io.WriteString(w, "\nProduct direction:\n")
-	_, _ = io.WriteString(w, "  UUID is the preferred identity-oriented limiter. IP limiting remains supported, but it can be imperfect in tunnel, relay, or shared-egress topologies where many users can present the same visible client address.\n")
+	_, _ = io.WriteString(w, "  When multiple rule kinds match the same live session, RayLimit keeps the highest-precedence kind only: ip > inbound > outbound. Within IP, a specific IP target overrides an ip all baseline. At one specificity, exclude rules suppress limit rules and multiple winning limit rules merge by taking the tightest upload/download value per direction.\n")
 	_, _ = io.WriteString(w, "\nCurrent limiter status:\n")
-	_, _ = io.WriteString(w, "  --ip is concrete for IPv4, normalizes IPv4-mapped IPv6 to the same managed IPv4 identity, and supports native IPv6 within the current u32 backend assumption of no IPv6 extension headers.\n")
-	_, _ = io.WriteString(w, "  --connection remains a session-scoped planning and cleanup workflow until a trustworthy runtime-aware traffic classifier exists. Real apply execution stays blocked, but remove can still clean observed class-oriented state.\n")
+	_, _ = io.WriteString(w, "  --ip all installs a runtime-local baseline through a direct matchall attachment. Specific --ip rules install direct client-IP classify or pass rules that override or bypass that baseline. IPv4, IPv4-mapped IPv6, and native IPv6 stay supported within the current u32 assumption of no IPv6 extension headers for specific IP matching.\n")
 	_, _ = io.WriteString(w, "  --inbound adds concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag. Wildcard, missing, unreadable, ambiguous, or non-TCP inbound config stays conservative and blocks apply execution.\n")
 	_, _ = io.WriteString(w, "  --outbound adds concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark without proxy or dialer-proxy indirection. Unreadable config, zero or shared marks, and outbound chaining stay conservative and block concrete execution.\n")
-	_, _ = io.WriteString(w, "  Plain --uuid uses the shared UUID aggregate pool path. It stays concrete for attachable client-ip members across IPv4, IPv4-mapped IPv6, and native IPv6 within the current no-extension-header assumption, and it adds two concrete non-ip RoutingService-backed socket-tuple backends: upload by exact-user local socket tuple and download by exact-user client socket tuple.\n")
-	_, _ = io.WriteString(w, "  Stale, partial, missing, or unsupported routing evidence keeps UUID execute blocked. Broader remote-target or metadata-only routing contexts remain future work until a safe exact-user remote-socket classifier exists.\n")
 }

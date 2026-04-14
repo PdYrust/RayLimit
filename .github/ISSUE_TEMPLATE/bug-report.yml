@@ -9,7 +9,7 @@ body:
     attributes:
       label: Summary
       description: Describe the problem directly.
-      placeholder: RayLimit reports a concrete UUID path in dry-run, but execute remains blocked for the same runtime.
+      placeholder: RayLimit reports a concrete outbound path in dry-run, but execute remains blocked for the same runtime.
     validations:
       required: true
 
@@ -70,7 +70,7 @@ body:
       label: Environment
       description: Include version, Linux distribution, kernel, and whether you ran from a release install or from source.
       placeholder: |
-        RayLimit: v0.1.0-beta
+        RayLimit: v0.2.0-beta
         Install path: release package
         Linux: Debian 12
         Kernel: 6.1.x

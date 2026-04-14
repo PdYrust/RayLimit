@@ -101,9 +101,6 @@ env/
 node_modules/
 docs-site/.next/
 docs-site/out/
-docs-site/public/raylimit-icon.svg
-docs-site/public/raylimit-icon.png
-docs-site/public/og-preview.png
 out/
 .npm/
 .pnpm-store/

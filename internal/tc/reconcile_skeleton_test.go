@@ -29,7 +29,7 @@ func TestPeriodicReconcilerDecideNoChangeForMatchingConcreteState(t *testing.T) 
 		Objects: []ManagedObject{
 			testPeriodicReconcileObject(ManagedObjectRootQDisc, "1:", false, false, true),
 			testPeriodicReconcileObject(ManagedObjectClass, "1:1001", false, false, false),
-			testPeriodicReconcileObject(ManagedObjectDirectAttachmentFilter, "1:|1:1001|ip|49153", false, false, false),
+			testPeriodicReconcileObject(ManagedObjectDirectAttachmentFilter, "1:|u32|ip|49153|1:1001", false, false, false),
 		},
 	}
 	observed := ManagedStateSet{
@@ -206,7 +206,7 @@ func TestPeriodicReconcilerDecideRejectsOwnerMismatch(t *testing.T) {
 			OwnerKey: "host_process|xray|xray|1234|container-1|ip|203.0.113.10",
 		},
 		Observed: ManagedStateSet{
-			OwnerKey: "host_process|xray|xray|1234|container-1|uuid|user-1",
+			OwnerKey: "host_process|xray|xray|1234|container-1|outbound|proxy-out",
 		},
 	})
 	if err == nil {

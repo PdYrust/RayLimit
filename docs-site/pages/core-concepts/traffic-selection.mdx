@@ -1,0 +1,67 @@
+# Traffic Selection
+
+After RayLimit knows which runtime you mean, it needs to know which traffic identity you want to shape.
+
+## Supported Limiter Families
+
+| Family | Subject form | What it means |
+| --- | --- | --- |
+| `ip` | `--ip all` or `--ip <ip>` | direct client-IP shaping inside one runtime |
+| `inbound` | `--inbound <tag>` | one runtime-local inbound listener path |
+| `outbound` | `--outbound <tag>` | one runtime-local outbound egress path |
+
+The selected family determines both the logical subject and the backend evidence RayLimit must prove before execution.
+
+## Direction And Device Are Always Explicit
+
+RayLimit plans one direction at a time:
+
+- `--direction upload`
+- `--direction download`
+
+Every `limit` command also requires `--device <device>`. RayLimit never guesses which interface you mean.
+
+If you want to shape both directions, run both commands explicitly:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction download --rate 4096
+```
+
+## How The Families Differ
+
+### IP
+
+The IP family supports three deliberate behaviors:
+
+- `--ip all --rate ...` creates a runtime-local baseline
+- `--ip <ip> --rate ...` creates a specific override
+- `--ip <ip> --unlimited` creates a specific no-limit exception
+
+The specific IP path overrides the baseline when both match.
+
+### Inbound
+
+Inbound uses one runtime-local tag and depends on readable configuration proving one concrete listener path.
+
+### Outbound
+
+Outbound uses one runtime-local tag and depends on readable configuration proving one concrete non-zero socket-mark path.
+
+## Choosing The Right Family
+
+| Choose this family | When it fits best | When to avoid it |
+| --- | --- | --- |
+| `ip` | visible client IP is the real control surface | the listener path or egress route is more meaningful than client identity |
+| `inbound` | one listener path needs its own cap | the inbound config is unreadable, wildcard-only, or not one concrete TCP listener |
+| `outbound` | one egress path needs its own cap | the outbound path depends on shared marks, chaining, or unreadable config |
+
+## Concrete Versus Blocked
+
+Traffic selection alone is not enough for live mutation. RayLimit must also prove that the current backend path is concrete:
+
+- IP is concrete through direct attachment
+- inbound is concrete only when one readable concrete TCP listener can be derived
+- outbound is concrete only when one unique non-zero socket mark can be derived
+
+When that proof does not exist, RayLimit blocks instead of fabricating a weaker identity.

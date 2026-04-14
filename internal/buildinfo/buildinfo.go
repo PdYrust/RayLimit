@@ -8,7 +8,7 @@ const (
 	CreatorName        = "YrustPd"
 	RepositoryURL      = "https://github.com/PdYrust/RayLimit"
 	TelegramChannelURL = "https://t.me/PdYrust"
-	ProductTagline     = "Reconcile-aware traffic shaping for Xray runtimes."
+	ProductTagline     = "Reconcile-aware traffic shaping for Xray runtimes on Linux."
 )
 
 // These values are intended to be overridden at build time for release artifacts.

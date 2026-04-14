@@ -79,9 +79,6 @@ func testObservedSession() SessionEvidence {
 		Session: Session{
 			ID:      "conn-1",
 			Runtime: testXrayEvidenceRuntime(),
-			Policy: SessionPolicyIdentity{
-				UUID: "user-a",
-			},
 			Client: SessionClient{
 				IP: "203.0.113.10",
 			},
@@ -431,7 +428,7 @@ func TestXraySessionEvidenceProviderReportsContainerAPIQueryPermissionDenied(t *
 	}
 }
 
-func TestXraySessionEvidenceProviderReturnsObservedSessionsWithUUIDEvidence(t *testing.T) {
+func TestXraySessionEvidenceProviderReturnsObservedSessionsFromOnlineIPEvidence(t *testing.T) {
 	configPath := writeXrayAPIConfig(t, `{
   "api": {"tag":"api","services":["StatsService"]},
   "inbounds": [{"tag":"api","listen":"127.0.0.1","port":10085}]
@@ -472,146 +469,11 @@ func TestXraySessionEvidenceProviderReturnsObservedSessionsWithUUIDEvidence(t *t
 	if !IsXrayOnlineIPSessionID(result.Evidence[0].Session.ID) {
 		t.Fatalf("expected synthetic online-ip session id, got %#v", result.Evidence[0])
 	}
-	if result.Evidence[0].Session.Policy.UUID != "user-a" {
-		t.Fatalf("expected uuid evidence to be preserved, got %#v", result.Evidence[0])
-	}
 	if result.Evidence[0].Session.Client.IP != "203.0.113.10" {
 		t.Fatalf("expected client ip evidence to be preserved, got %#v", result.Evidence[0])
 	}
 	if result.Evidence[0].Runtime.HostPID != 1001 {
 		t.Fatalf("expected runtime association to be normalized, got %#v", result.Evidence[0])
-	}
-}
-
-func TestXraySessionEvidenceProviderObserveUUIDSessionsReturnsSyntheticMembershipWhenOnlineUserHasNoIPs(t *testing.T) {
-	configPath := writeXrayAPIConfig(t, `{
-  "api": {"tag":"api","services":["StatsService"]},
-  "inbounds": [{"tag":"api","listen":"127.0.0.1","port":10085}]
-}`)
-
-	provider := NewXraySessionEvidenceProvider(stubRuntimeTargetDiscoverer{
-		result: Result{
-			Targets: []RuntimeTarget{testXrayEvidenceTarget(t, configPath)},
-		},
-	})
-	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
-		switch command {
-		case "statsonlineiplist":
-			if len(args) != 2 || args[0] != "-email" || args[1] != "user-a" {
-				t.Fatalf("unexpected statsonlineiplist args %#v", args)
-			}
-			return []byte(`{"name":"user>>>user-a>>>online"}`), nil
-		default:
-			t.Fatalf("unexpected xray api command %q with args %#v", command, args)
-			return nil, nil
-		}
-	}
-
-	result, err := provider.ObserveUUIDSessions(context.Background(), testXrayEvidenceRuntime(), "user-a")
-	if err != nil {
-		t.Fatalf("expected targeted uuid observation to succeed, got %v", err)
-	}
-
-	if result.State() != SessionEvidenceStateAvailable {
-		t.Fatalf("expected available state, got %#v", result)
-	}
-	if len(result.Evidence) != 1 {
-		t.Fatalf("expected one synthetic aggregate member, got %#v", result)
-	}
-	if !IsXrayOnlineUserSessionID(result.Evidence[0].Session.ID) {
-		t.Fatalf("expected synthetic online-user session id, got %#v", result.Evidence[0])
-	}
-	if result.Evidence[0].Confidence != SessionEvidenceConfidenceMedium {
-		t.Fatalf("expected medium confidence for online-user evidence without client ip, got %#v", result.Evidence[0])
-	}
-	if result.Evidence[0].Session.Client.IP != "" {
-		t.Fatalf("expected no client ip evidence, got %#v", result.Evidence[0])
-	}
-}
-
-func TestXraySessionEvidenceProviderObserveUUIDSessionsReturnsIPBackedMembershipWhenOnlineIPsExist(t *testing.T) {
-	configPath := writeXrayAPIConfig(t, `{
-  "api": {"tag":"api","services":["StatsService"]},
-  "inbounds": [{"tag":"api","listen":"127.0.0.1","port":10085}]
-}`)
-
-	provider := NewXraySessionEvidenceProvider(stubRuntimeTargetDiscoverer{
-		result: Result{
-			Targets: []RuntimeTarget{testXrayEvidenceTarget(t, configPath)},
-		},
-	})
-	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
-		switch command {
-		case "statsonlineiplist":
-			if len(args) != 2 || args[0] != "-email" || args[1] != "user-a" {
-				t.Fatalf("unexpected statsonlineiplist args %#v", args)
-			}
-			return []byte(`{"name":"user>>>user-a>>>online","ips":{"203.0.113.10":1710000000}}`), nil
-		default:
-			t.Fatalf("unexpected xray api command %q with args %#v", command, args)
-			return nil, nil
-		}
-	}
-
-	result, err := provider.ObserveUUIDSessions(context.Background(), testXrayEvidenceRuntime(), "user-a")
-	if err != nil {
-		t.Fatalf("expected targeted uuid observation to succeed, got %v", err)
-	}
-
-	if result.State() != SessionEvidenceStateAvailable {
-		t.Fatalf("expected available state, got %#v", result)
-	}
-	if len(result.Evidence) != 1 {
-		t.Fatalf("expected one ip-backed aggregate member, got %#v", result)
-	}
-	if !IsXrayOnlineIPSessionID(result.Evidence[0].Session.ID) {
-		t.Fatalf("expected synthetic online-ip session id, got %#v", result.Evidence[0])
-	}
-	if result.Evidence[0].Session.Client.IP != "203.0.113.10" {
-		t.Fatalf("expected client ip evidence, got %#v", result.Evidence[0])
-	}
-}
-
-func TestXraySessionEvidenceProviderObserveUUIDSessionsNormalizesIPv4MappedIPv6(t *testing.T) {
-	configPath := writeXrayAPIConfig(t, `{
-  "api": {"tag":"api","services":["StatsService"]},
-  "inbounds": [{"tag":"api","listen":"127.0.0.1","port":10085}]
-}`)
-
-	provider := NewXraySessionEvidenceProvider(stubRuntimeTargetDiscoverer{
-		result: Result{
-			Targets: []RuntimeTarget{testXrayEvidenceTarget(t, configPath)},
-		},
-	})
-	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
-		switch command {
-		case "statsonlineiplist":
-			if len(args) != 2 || args[0] != "-email" || args[1] != "user-a" {
-				t.Fatalf("unexpected statsonlineiplist args %#v", args)
-			}
-			return []byte(`{"name":"user>>>user-a>>>online","ips":{"::ffff:203.0.113.10":1710000000}}`), nil
-		default:
-			t.Fatalf("unexpected xray api command %q with args %#v", command, args)
-			return nil, nil
-		}
-	}
-
-	result, err := provider.ObserveUUIDSessions(context.Background(), testXrayEvidenceRuntime(), "user-a")
-	if err != nil {
-		t.Fatalf("expected targeted uuid observation to succeed, got %v", err)
-	}
-
-	if result.State() != SessionEvidenceStateAvailable {
-		t.Fatalf("expected available state, got %#v", result)
-	}
-	if len(result.Evidence) != 1 {
-		t.Fatalf("expected one ip-backed aggregate member, got %#v", result)
-	}
-	if result.Evidence[0].Session.Client.IP != "203.0.113.10" {
-		t.Fatalf("expected mapped ipv6 client ip to normalize to ipv4, got %#v", result.Evidence[0])
 	}
 }
 
@@ -701,9 +563,9 @@ func TestXraySessionEvidenceProviderReturnsMultipleObservedSessionsFromOnlineIPs
 	if len(result.Evidence) != 3 {
 		t.Fatalf("expected three observed sessions, got %#v", result)
 	}
-	if result.Evidence[0].Session.Policy.UUID != "user-a" ||
-		result.Evidence[1].Session.Policy.UUID != "user-b" ||
-		result.Evidence[2].Session.Policy.UUID != "user-b" {
+	if result.Evidence[0].Session.ID != "xray-online-ip:user-a:203.0.113.10" ||
+		result.Evidence[1].Session.ID != "xray-online-ip:user-b:203.0.113.11" ||
+		result.Evidence[2].Session.ID != "xray-online-ip:user-b:203.0.113.12" {
 		t.Fatalf("expected deterministic evidence ordering, got %#v", result.Evidence)
 	}
 }
@@ -957,8 +819,8 @@ func TestXraySessionEvidenceProviderReturnsObservedSessionsForDockerRuntime(t *t
 	if result.Evidence[0].Runtime.ContainerID != "container-1" {
 		t.Fatalf("expected docker runtime association to be preserved, got %#v", result.Evidence[0])
 	}
-	if result.Evidence[0].Session.Policy.UUID != "user-a" {
-		t.Fatalf("expected uuid evidence to be preserved, got %#v", result.Evidence[0])
+	if result.Evidence[0].Session.Client.IP != "203.0.113.10" {
+		t.Fatalf("expected client ip evidence to be preserved, got %#v", result.Evidence[0])
 	}
 }
 

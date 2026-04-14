@@ -19,6 +19,7 @@ func testAppliedState(t *testing.T, desired DesiredState, upload int64, download
 	}
 
 	applied := AppliedState{
+		Mode:      desired.Mode,
 		Subject:   desired.Subject,
 		Limits:    limits,
 		Driver:    "tc",
@@ -32,7 +33,7 @@ func testAppliedState(t *testing.T, desired DesiredState, upload int64, download
 }
 
 func TestReconcilerDecideApplyWithNoAppliedState(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindConnection)
+	desired := testDesiredState(t, policy.TargetKindIP)
 
 	decision, err := (Reconciler{}).Decide(&desired, nil)
 	if err != nil {
@@ -59,7 +60,7 @@ func TestReconcilerDecideApplyWithNoAppliedState(t *testing.T) {
 }
 
 func TestReconcilerDecideNoOpForMatchingAppliedState(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindUUID)
+	desired := testDesiredState(t, policy.TargetKindIP)
 	applied := testAppliedState(t, desired, 2048, 4096, "1:2a")
 
 	decision, err := (Reconciler{}).Decide(&desired, []AppliedState{applied})
@@ -137,7 +138,7 @@ func TestReconcilerDecideRemoveWhenAppliedStateExistsWithoutDesiredState(t *test
 }
 
 func TestReconcilerDecideReplaceForMultipleAppliedStates(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindConnection)
+	desired := testDesiredState(t, policy.TargetKindOutbound)
 	applied := []AppliedState{
 		testAppliedState(t, desired, 2048, 4096, "1:2a"),
 		testAppliedState(t, desired, 2048, 4096, "1:2b"),
@@ -157,7 +158,7 @@ func TestReconcilerDecideReplaceForMultipleAppliedStates(t *testing.T) {
 }
 
 func TestReconcilerDecideRejectsMismatchedAppliedState(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindConnection)
+	desired := testDesiredState(t, policy.TargetKindOutbound)
 	mismatched := testDesiredState(t, policy.TargetKindIP)
 	applied := testAppliedState(t, mismatched, 2048, 4096, "1:2a")
 
@@ -168,7 +169,7 @@ func TestReconcilerDecideRejectsMismatchedAppliedState(t *testing.T) {
 }
 
 func TestDecisionValidateAllowsSubjectOnlyRemoveDecision(t *testing.T) {
-	desired := testDesiredState(t, policy.TargetKindUUID)
+	desired := testDesiredState(t, policy.TargetKindIP)
 
 	err := (Decision{
 		Kind:    DecisionRemove,

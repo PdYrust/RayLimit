@@ -1,0 +1,100 @@
+# Installation
+
+RayLimit targets Linux hosts where traffic shaping is managed intentionally. There are two supported starting points:
+
+- install from a release package
+- run from a local checkout or local build
+
+## Before Installing
+
+RayLimit itself is a Go binary, but practical operator use also depends on host tooling:
+
+```bash
+command -v tc
+uname -a
+id
+```
+
+Those checks tell you whether the host is Linux, whether the traffic-control userspace tools are present, and whether your current shell has the privileges you expect.
+
+## Release Package Path
+
+Use the release path when you want a normal installed layout and a `raylimit` command in `PATH`.
+
+```bash
+tar -xzf raylimit_v0.2.0-beta_linux_amd64.tar.gz
+cd raylimit_v0.2.0-beta_linux_amd64
+sudo ./scripts/install.sh
+```
+
+This installs the binary and the packaged support files to their intended system locations.
+
+### Verify The Installed Path
+
+```bash
+command -v raylimit
+raylimit version
+raylimit --help
+```
+
+### First Installed-Path Smoke Check
+
+```bash
+sudo raylimit discover
+sudo raylimit inspect --pid 1234
+```
+
+## Local Checkout Path
+
+Use the local path when you want the fastest evaluation or development loop.
+
+### Fast Start With `go run`
+
+```bash
+go run ./cmd/raylimit --help
+go run ./cmd/raylimit version
+```
+
+This is the fastest way to confirm the checkout is runnable without committing to an install.
+
+### Build A Reusable Local Binary
+
+```bash
+make build
+./bin/raylimit --help
+./bin/raylimit version
+```
+
+Use the built binary when you plan to repeat the same validation steps several times on one host.
+
+### Local-Path Discovery Check
+
+```bash
+sudo ./bin/raylimit discover
+sudo ./bin/raylimit inspect --pid 1234
+```
+
+## Privilege Expectations
+
+Dry-run does not require live mutation privileges. Real `--execute` flows do.
+
+Useful host checks:
+
+```bash
+command -v tc
+sudo -n true
+ip link show dev eth0
+```
+
+If those checks fail, stay in dry-run mode until the host is ready.
+
+## Update And Removal
+
+For a release-install directory:
+
+```bash
+sudo ./scripts/update.sh
+sudo ./scripts/uninstall.sh
+```
+
+`update.sh` refreshes the managed install from a release directory. `uninstall.sh` removes RayLimit-managed files without claiming unrelated host state or host-owned traffic rules.

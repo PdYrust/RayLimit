@@ -306,103 +306,30 @@ func TestSnapshotEligibleForRootQDiscCleanupReturnsFalseWhenAdditionalStateRemai
 	}
 }
 
-func TestSnapshotUUIDAggregateAttachmentFiltersReturnsMatchingManagedFilters(t *testing.T) {
-	snapshot := Snapshot{
-		Device: "lo",
-		Filters: []FilterState{
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 140, FlowID: "1:2a"},
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 120, FlowID: "1:2a"},
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 160, FlowID: "1:2b"},
-			{Kind: "flower", Parent: "1:", Protocol: "ip", Preference: 180, FlowID: "1:2a"},
-		},
-	}
-
-	filters := snapshot.UUIDAggregateAttachmentFilters("1:", "1:2a")
-	if len(filters) != 2 {
-		t.Fatalf("expected two matching aggregate attachment filters, got %#v", filters)
-	}
-	if filters[0].Preference != 120 || filters[1].Preference != 140 {
-		t.Fatalf("expected matching filters to remain deterministic by preference, got %#v", filters)
-	}
-}
-
-func TestSnapshotEligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemoval(t *testing.T) {
-	snapshot := Snapshot{
-		Device: "lo",
-		QDiscs: []QDiscState{
-			{Kind: "htb", Handle: "1:", Parent: "root"},
-		},
-		Classes: []ClassState{
-			{Kind: "htb", ClassID: "1:2a", Parent: "1:"},
-		},
-		Filters: []FilterState{
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 120, FlowID: "1:2a"},
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 140, FlowID: "1:2a"},
-		},
-	}
-
-	if !snapshot.EligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemoval("1:", "1:2a") {
-		t.Fatalf("expected aggregate filter cleanup to allow root qdisc cleanup, got %#v", snapshot)
-	}
-}
-
-func TestSnapshotEligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemovalWhenClassIsAlreadyGone(t *testing.T) {
-	snapshot := Snapshot{
-		Device: "lo",
-		QDiscs: []QDiscState{
-			{Kind: "htb", Handle: "1:", Parent: "root"},
-		},
-		Filters: []FilterState{
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 120, FlowID: "1:2a"},
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 140, FlowID: "1:2a"},
-		},
-	}
-
-	if !snapshot.EligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemoval("1:", "1:2a") {
-		t.Fatalf("expected aggregate filter cleanup to allow root qdisc cleanup even when the class is already gone, got %#v", snapshot)
-	}
-}
-
-func TestSnapshotEligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemovalReturnsFalseWhenOtherStateRemains(t *testing.T) {
-	snapshot := Snapshot{
-		Device: "lo",
-		QDiscs: []QDiscState{
-			{Kind: "htb", Handle: "1:", Parent: "root"},
-		},
-		Classes: []ClassState{
-			{Kind: "htb", ClassID: "1:2a", Parent: "1:"},
-		},
-		Filters: []FilterState{
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 120, FlowID: "1:2a"},
-			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 140, FlowID: "1:2b"},
-		},
-	}
-
-	if snapshot.EligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemoval("1:", "1:2a") {
-		t.Fatalf("expected unrelated filter state to keep the root qdisc, got %#v", snapshot)
-	}
-}
-
 func TestSnapshotDirectAttachmentFiltersReturnsMatchingManagedFilters(t *testing.T) {
 	execution := DirectAttachmentExecution{
 		Readiness:  BindingReadinessReady,
 		Confidence: BindingConfidenceHigh,
 		Rules: []DirectAttachmentRule{
 			{
-				Identity:   TrafficIdentity{Kind: IdentityKindClientIP, Value: "203.0.113.10"},
-				MatchField: UUIDAggregateAttachmentMatchSource,
-				Preference: 120,
-				ClassID:    "1:2a",
-				Readiness:  BindingReadinessReady,
-				Confidence: BindingConfidenceHigh,
+				Identity:    TrafficIdentity{Kind: IdentityKindClientIP, Value: "203.0.113.10"},
+				Classifier:  DirectAttachmentClassifierU32,
+				Disposition: DirectAttachmentDispositionClassify,
+				MatchField:  AttachmentMatchSource,
+				Preference:  120,
+				ClassID:     "1:2a",
+				Readiness:   BindingReadinessReady,
+				Confidence:  BindingConfidenceHigh,
 			},
 			{
-				Identity:   TrafficIdentity{Kind: IdentityKindClientIP, Value: "203.0.113.11"},
-				MatchField: UUIDAggregateAttachmentMatchSource,
-				Preference: 140,
-				ClassID:    "1:2a",
-				Readiness:  BindingReadinessReady,
-				Confidence: BindingConfidenceHigh,
+				Identity:    TrafficIdentity{Kind: IdentityKindClientIP, Value: "203.0.113.11"},
+				Classifier:  DirectAttachmentClassifierU32,
+				Disposition: DirectAttachmentDispositionClassify,
+				MatchField:  AttachmentMatchSource,
+				Preference:  140,
+				ClassID:     "1:2a",
+				Readiness:   BindingReadinessReady,
+				Confidence:  BindingConfidenceHigh,
 			},
 		},
 	}
@@ -431,12 +358,14 @@ func TestSnapshotDirectAttachmentFiltersReturnsMatchingManagedIPv6Filters(t *tes
 		Confidence: BindingConfidenceMedium,
 		Rules: []DirectAttachmentRule{
 			{
-				Identity:   TrafficIdentity{Kind: IdentityKindClientIP, Value: "2001:db8::10"},
-				MatchField: UUIDAggregateAttachmentMatchSource,
-				Preference: 120,
-				ClassID:    "1:2a",
-				Readiness:  BindingReadinessReady,
-				Confidence: BindingConfidenceMedium,
+				Identity:    TrafficIdentity{Kind: IdentityKindClientIP, Value: "2001:db8::10"},
+				Classifier:  DirectAttachmentClassifierU32,
+				Disposition: DirectAttachmentDispositionClassify,
+				MatchField:  AttachmentMatchSource,
+				Preference:  120,
+				ClassID:     "1:2a",
+				Readiness:   BindingReadinessReady,
+				Confidence:  BindingConfidenceMedium,
 			},
 		},
 	}
@@ -455,7 +384,7 @@ func TestSnapshotDirectAttachmentFiltersReturnsMatchingManagedIPv6Filters(t *tes
 }
 
 func TestClassStateAppliedStateBuildsLimiterState(t *testing.T) {
-	subject := testDesiredState(t, policy.TargetKindConnection, 2048, 0).Subject
+	subject := testDesiredState(t, policy.TargetKindIP, 2048, 0).Subject
 	class := ClassState{
 		Kind:               "htb",
 		ClassID:            "1:2a",

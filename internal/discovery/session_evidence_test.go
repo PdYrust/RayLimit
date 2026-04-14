@@ -15,9 +15,6 @@ func testSessionEvidenceSession() Session {
 	return Session{
 		ID:      "conn-1",
 		Runtime: testSessionEvidenceRuntime(),
-		Policy: SessionPolicyIdentity{
-			UUID: "user-a",
-		},
 		Client: SessionClient{
 			IP: "203.0.113.10",
 		},

@@ -19,7 +19,6 @@ type RuntimeTargetDiscoverer interface {
 
 type xrayEndpointProbe func(ctx context.Context, endpoint APIEndpoint) error
 type xraySessionQuery func(ctx context.Context, target RuntimeTarget, endpoint APIEndpoint) ([]SessionEvidence, error)
-type xrayUUIDSessionQuery func(ctx context.Context, target RuntimeTarget, endpoint APIEndpoint, uuid string) ([]SessionEvidence, error)
 
 // XraySessionEvidenceProvider resolves runtime targets, inspects Xray API
 // capability metadata, and queries live session evidence from reachable Xray
@@ -31,7 +30,6 @@ type XraySessionEvidenceProvider struct {
 	RunAPICommand          xrayAPICommandRunner
 	RunContainerAPICommand xrayContainerAPICommandRunner
 	QuerySessions          xraySessionQuery
-	QueryUUIDSessions      xrayUUIDSessionQuery
 }
 
 // NewXraySessionEvidenceProvider returns the default Xray-backed evidence provider.
@@ -44,14 +42,10 @@ func (p XraySessionEvidenceProvider) Name() string {
 }
 
 func (p XraySessionEvidenceProvider) ObserveSessions(ctx context.Context, runtime SessionRuntime) (SessionEvidenceResult, error) {
-	return p.observe(ctx, runtime, "")
+	return p.observe(ctx, runtime)
 }
 
-func (p XraySessionEvidenceProvider) ObserveUUIDSessions(ctx context.Context, runtime SessionRuntime, uuid string) (SessionEvidenceResult, error) {
-	return p.observe(ctx, runtime, strings.TrimSpace(uuid))
-}
-
-func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime SessionRuntime, uuid string) (SessionEvidenceResult, error) {
+func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime SessionRuntime) (SessionEvidenceResult, error) {
 	if err := runtime.Validate(); err != nil {
 		return SessionEvidenceResult{}, err
 	}
@@ -147,7 +141,6 @@ func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime Sessio
 
 	probe := p.endpointProbe()
 	query := p.sessionQuery()
-	uuidQuery := p.uuidSessionQuery()
 	var reachable bool
 	var queryFailures int
 
@@ -162,12 +155,7 @@ func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime Sessio
 		}
 		reachable = true
 
-		var observed []SessionEvidence
-		if uuid != "" {
-			observed, err = uuidQuery(ctx, target, endpoint, uuid)
-		} else {
-			observed, err = query(ctx, target, endpoint)
-		}
+		observed, err := query(ctx, target, endpoint)
 		if err != nil {
 			queryFailures++
 			result.Issues = append(result.Issues, sessionQueryIssue(endpoint, err))
@@ -230,14 +218,6 @@ func (p XraySessionEvidenceProvider) containerAPICommandRunner() xrayContainerAP
 	}
 
 	return defaultXrayContainerAPICommandRunner
-}
-
-func (p XraySessionEvidenceProvider) uuidSessionQuery() xrayUUIDSessionQuery {
-	if p.QueryUUIDSessions != nil {
-		return p.QueryUUIDSessions
-	}
-
-	return defaultXrayUUIDSessionQuery(p.apiCommandRunner(), p.containerAPICommandRunner())
 }
 
 func matchRuntimeTargets(targets []RuntimeTarget, runtime SessionRuntime) []RuntimeTarget {

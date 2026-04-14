@@ -16,34 +16,28 @@ func TestLimitTargetSelectionValidateAcceptsSupportedKinds(t *testing.T) {
 		wantValue string
 	}{
 		{
-			name:      "connection",
-			selection: limitTargetSelection{Connection: "conn-1"},
-			wantKind:  policy.TargetKindConnection,
-			wantValue: "conn-1",
-		},
-		{
-			name:      "uuid",
-			selection: limitTargetSelection{UUID: "user-a"},
-			wantKind:  policy.TargetKindUUID,
-			wantValue: "user-a",
-		},
-		{
 			name:      "ip",
 			selection: limitTargetSelection{IP: "203.0.113.10"},
 			wantKind:  policy.TargetKindIP,
 			wantValue: "203.0.113.10",
 		},
 		{
-			name:      "ipv6",
-			selection: limitTargetSelection{IP: "2001:0db8::0010"},
-			wantKind:  policy.TargetKindIP,
-			wantValue: "2001:db8::10",
-		},
-		{
 			name:      "mapped-ipv4",
 			selection: limitTargetSelection{IP: "::ffff:203.0.113.10"},
 			wantKind:  policy.TargetKindIP,
 			wantValue: "203.0.113.10",
+		},
+		{
+			name:      "ip-all",
+			selection: limitTargetSelection{IP: "all"},
+			wantKind:  policy.TargetKindIP,
+			wantValue: "all",
+		},
+		{
+			name:      "ip-all-uppercase",
+			selection: limitTargetSelection{IP: "ALL"},
+			wantKind:  policy.TargetKindIP,
+			wantValue: "all",
 		},
 		{
 			name:      "inbound",
@@ -74,42 +68,37 @@ func TestLimitTargetSelectionValidateAcceptsSupportedKinds(t *testing.T) {
 	}
 }
 
-func TestLimitTargetSelectionValidateRejectsMultipleTargets(t *testing.T) {
-	selection := limitTargetSelection{
-		Connection: "conn-1",
-		UUID:       "user-a",
+func TestLimitTargetSelectionValidateRejectsMissingOrMultipleTargets(t *testing.T) {
+	cases := []struct {
+		name      string
+		selection limitTargetSelection
+		want      string
+	}{
+		{
+			name:      "missing",
+			selection: limitTargetSelection{},
+			want:      "select one limit target",
+		},
+		{
+			name: "multiple",
+			selection: limitTargetSelection{
+				IP:      "203.0.113.10",
+				Inbound: "api-in",
+			},
+			want: "select exactly one limit target",
+		},
 	}
 
-	err := selection.Validate()
-	if err == nil {
-		t.Fatal("expected selection validation to fail")
-	}
-	if !strings.Contains(err.Error(), "select exactly one limit target") {
-		t.Fatalf("unexpected validation error: %v", err)
-	}
-}
-
-func TestLimitTargetSelectionValidateRejectsMissingTarget(t *testing.T) {
-	selection := limitTargetSelection{}
-
-	err := selection.Validate()
-	if err == nil {
-		t.Fatal("expected selection validation to fail")
-	}
-	if !strings.Contains(err.Error(), "select one limit target") {
-		t.Fatalf("unexpected validation error: %v", err)
-	}
-}
-
-func TestLimitTargetSelectionValidateRejectsInvalidIP(t *testing.T) {
-	selection := limitTargetSelection{IP: "not-an-ip"}
-
-	err := selection.Validate()
-	if err == nil {
-		t.Fatal("expected selection validation to fail")
-	}
-	if !strings.Contains(err.Error(), `invalid IP address "not-an-ip" for --ip`) {
-		t.Fatalf("unexpected validation error: %v", err)
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.selection.Validate()
+			if err == nil {
+				t.Fatal("expected selection validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
 	}
 }
 
@@ -120,29 +109,20 @@ func TestLimitTargetSelectionApplyPopulatesSessionIdentity(t *testing.T) {
 		verify    func(t *testing.T, session discovery.Session)
 	}{
 		{
-			name:      "connection",
-			selection: limitTargetSelection{Connection: "conn-1"},
-			verify: func(t *testing.T, session discovery.Session) {
-				if session.ID != "conn-1" {
-					t.Fatalf("expected session id to be populated, got %#v", session)
-				}
-			},
-		},
-		{
-			name:      "uuid",
-			selection: limitTargetSelection{UUID: "user-a"},
-			verify: func(t *testing.T, session discovery.Session) {
-				if session.Policy.UUID != "user-a" {
-					t.Fatalf("expected policy uuid to be populated, got %#v", session)
-				}
-			},
-		},
-		{
 			name:      "ip",
 			selection: limitTargetSelection{IP: "::ffff:203.0.113.10"},
 			verify: func(t *testing.T, session discovery.Session) {
 				if session.Client.IP != "203.0.113.10" {
 					t.Fatalf("expected client ip to be populated, got %#v", session)
+				}
+			},
+		},
+		{
+			name:      "ip-all",
+			selection: limitTargetSelection{IP: "all"},
+			verify: func(t *testing.T, session discovery.Session) {
+				if session.Client.IP != "" {
+					t.Fatalf("expected ip all to leave the synthetic session client ip unset, got %#v", session)
 				}
 			},
 		},
@@ -175,24 +155,20 @@ func TestLimitTargetSelectionApplyPopulatesSessionIdentity(t *testing.T) {
 	}
 }
 
-func TestLimitTargetSelectionPolicyTargetBuildsGenericTarget(t *testing.T) {
-	runtime := discovery.SessionRuntime{
-		Source:  discovery.DiscoverySourceHostProcess,
-		HostPID: 1001,
-	}
-
-	target, err := (limitTargetSelection{UUID: "user-a"}).policyTarget(runtime)
+func TestLimitTargetSelectionPolicyTargetBuildsExpectedTarget(t *testing.T) {
+	ipTarget, err := (limitTargetSelection{IP: "203.0.113.10"}).policyTarget()
 	if err != nil {
-		t.Fatalf("expected policy target construction to succeed, got %v", err)
+		t.Fatalf("expected ip policy target construction to succeed, got %v", err)
+	}
+	if ipTarget.Kind != policy.TargetKindIP || ipTarget.Value != "203.0.113.10" {
+		t.Fatalf("unexpected ip target: %#v", ipTarget)
 	}
 
-	if target.Kind != policy.TargetKindUUID {
-		t.Fatalf("expected uuid target kind, got %#v", target)
+	allTarget, err := (limitTargetSelection{IP: "all"}).policyTarget()
+	if err != nil {
+		t.Fatalf("expected ip baseline target construction to succeed, got %v", err)
 	}
-	if target.Value != "user-a" {
-		t.Fatalf("expected uuid target value, got %#v", target)
-	}
-	if target.Connection != nil {
-		t.Fatalf("expected generic target to omit connection details, got %#v", target)
+	if allTarget.Kind != policy.TargetKindIP || !allTarget.All || allTarget.Value != "" {
+		t.Fatalf("unexpected ip all target: %#v", allTarget)
 	}
 }

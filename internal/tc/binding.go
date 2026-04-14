@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PdYrust/RayLimit/internal/discovery"
 	"github.com/PdYrust/RayLimit/internal/ipaddr"
 	"github.com/PdYrust/RayLimit/internal/limiter"
 	"github.com/PdYrust/RayLimit/internal/policy"
@@ -52,16 +51,15 @@ func (c BindingConfidence) Valid() bool {
 type IdentityKind string
 
 const (
-	IdentityKindSession     IdentityKind = "session_id"
 	IdentityKindClientIP    IdentityKind = "client_ip"
+	IdentityKindAllClientIP IdentityKind = "all_client_ips"
 	IdentityKindInbound     IdentityKind = "inbound_tag"
 	IdentityKindOutbound    IdentityKind = "outbound_tag"
-	IdentityKindUUIDRouting IdentityKind = "uuid_routing_context"
 )
 
 func (k IdentityKind) Valid() bool {
 	switch k {
-	case IdentityKindSession, IdentityKindClientIP, IdentityKindInbound, IdentityKindOutbound, IdentityKindUUIDRouting:
+	case IdentityKindClientIP, IdentityKindAllClientIP, IdentityKindInbound, IdentityKindOutbound:
 		return true
 	default:
 		return false
@@ -78,6 +76,9 @@ type TrafficIdentity struct {
 func (i TrafficIdentity) Validate() error {
 	if !i.Kind.Valid() {
 		return fmt.Errorf("invalid traffic identity kind %q", i.Kind)
+	}
+	if i.Kind == IdentityKindAllClientIP {
+		return nil
 	}
 	if strings.TrimSpace(i.Value) == "" {
 		return errors.New("traffic identity value is required")
@@ -116,18 +117,8 @@ func (b Binding) Validate() error {
 		}
 	}
 
-	if b.RequestedSubject.Kind == policy.TargetKindUUID && b.EffectiveSubject.Kind == policy.TargetKindConnection {
-		if !sameRuntimeBinding(b.RequestedSubject.Binding.Runtime, b.EffectiveSubject.Binding.Runtime) {
-			return errors.New("uuid bridge requires the requested and effective runtime bindings to match")
-		}
-		if b.Identity == nil || b.Identity.Kind != IdentityKindSession {
-			return errors.New("uuid bridge requires a session identity")
-		}
-		return nil
-	}
-
 	if !b.RequestedSubject.Equal(b.EffectiveSubject) {
-		return errors.New("requested and effective subjects must match unless an explicit uuid bridge is used")
+		return errors.New("requested and effective subjects must match")
 	}
 
 	return nil
@@ -146,15 +137,15 @@ func BindSubject(subject limiter.Subject) (Binding, error) {
 	}
 
 	switch subject.Kind {
-	case policy.TargetKindConnection:
-		binding.Identity = &TrafficIdentity{
-			Kind:  IdentityKindSession,
-			Value: strings.TrimSpace(subject.Binding.SessionID),
-		}
-		binding.Readiness = BindingReadinessPartial
-		binding.Confidence = BindingConfidenceMedium
-		binding.Reason = "connection targets currently remain class-oriented; tc can plan class shaping and clean up observed class state, but real apply execution requires a trustworthy runtime-aware traffic classifier"
 	case policy.TargetKindIP:
+		if subject.All {
+			binding.Identity = &TrafficIdentity{
+				Kind: IdentityKindAllClientIP,
+			}
+			binding.Readiness = BindingReadinessReady
+			binding.Confidence = BindingConfidenceHigh
+			break
+		}
 		identityValue, err := ipaddr.Normalize(subject.Value)
 		if err != nil {
 			return Binding{}, err
@@ -181,10 +172,6 @@ func BindSubject(subject limiter.Subject) (Binding, error) {
 		binding.Readiness = BindingReadinessPartial
 		binding.Confidence = BindingConfidenceMedium
 		binding.Reason = "outbound targets require a trustworthy runtime-owned socket mark; when readable Xray config proves one unique non-zero outbound socket mark without proxy or dialer-proxy indirection, RayLimit can attach that shared class concretely through nftables output matching and tc fw classification"
-	case policy.TargetKindUUID:
-		binding.Readiness = BindingReadinessUnavailable
-		binding.Confidence = BindingConfidenceLow
-		binding.Reason = "uuid targets are policy identities and are not directly traffic-bindable without session correlation"
 	default:
 		return Binding{}, fmt.Errorf("unsupported subject kind %q", subject.Kind)
 	}
@@ -194,55 +181,4 @@ func BindSubject(subject limiter.Subject) (Binding, error) {
 	}
 
 	return binding, nil
-}
-
-// BindUUIDSessionBridge models the trustworthy single-session case where a UUID
-// target has already been correlated to one concrete runtime session.
-func BindUUIDSessionBridge(requested limiter.Subject, session discovery.Session) (Binding, error) {
-	if err := requested.Validate(); err != nil {
-		return Binding{}, err
-	}
-	if requested.Kind != policy.TargetKindUUID {
-		return Binding{}, errors.New("uuid bridge requires a uuid requested subject")
-	}
-	if err := session.Validate(); err != nil {
-		return Binding{}, fmt.Errorf("invalid session: %w", err)
-	}
-	if !sameRuntimeBinding(requested.Binding.Runtime, session.Runtime) {
-		return Binding{}, errors.New("uuid bridge session does not match the requested runtime binding")
-	}
-	if !strings.EqualFold(strings.TrimSpace(requested.Value), strings.TrimSpace(session.Policy.UUID)) {
-		return Binding{}, errors.New("uuid bridge session does not match the requested uuid")
-	}
-
-	effective, err := limiter.SubjectFromSession(policy.TargetKindConnection, session)
-	if err != nil {
-		return Binding{}, err
-	}
-
-	binding := Binding{
-		RequestedSubject: requested,
-		EffectiveSubject: effective,
-		Identity: &TrafficIdentity{
-			Kind:  IdentityKindSession,
-			Value: strings.TrimSpace(session.ID),
-		},
-		Readiness:  BindingReadinessPartial,
-		Confidence: BindingConfidenceMedium,
-		Reason:     "uuid became traffic-bindable through an exact single-session bridge and still requires a runtime-aware traffic classifier",
-	}
-
-	if err := binding.Validate(); err != nil {
-		return Binding{}, err
-	}
-
-	return binding, nil
-}
-
-func sameRuntimeBinding(left discovery.SessionRuntime, right discovery.SessionRuntime) bool {
-	return left.Source == right.Source &&
-		strings.TrimSpace(left.Provider) == strings.TrimSpace(right.Provider) &&
-		strings.TrimSpace(left.Name) == strings.TrimSpace(right.Name) &&
-		left.HostPID == right.HostPID &&
-		strings.TrimSpace(left.ContainerID) == strings.TrimSpace(right.ContainerID)
 }

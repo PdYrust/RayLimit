@@ -1,0 +1,28 @@
+# Behavior
+
+RayLimit is not just a syntax-driven CLI. It applies a consistent behavior model to selection, precedence, observation, reconcile, and cleanup.
+
+## Why This Section Matters
+
+If you only learn the command flags, you will still be guessing about:
+
+- why one subject wins over another
+- why a request becomes `no_op`
+- why a request becomes `replace` instead of `apply`
+- why remove sometimes deletes less than you expected
+- why blocked execution is a deliberate safety choice
+
+This section explains those parts of the product contract.
+
+## What This Section Covers
+
+- how RayLimit resolves competing limiter kinds
+- how specific IP rules interact with an IP baseline
+- what apply, no-op, replace, and remove mean
+- how observed state influences the decision
+- why cleanup stays conservative
+
+## Read These Pages Next
+
+- [Policy And Precedence](/behavior/policy-and-precedence)
+- [Reconcile Behavior](/behavior/reconcile-behavior)

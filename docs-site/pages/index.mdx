@@ -1,0 +1,75 @@
+# RayLimit Documentation
+
+RayLimit is a Linux CLI for discovering Xray runtimes, inspecting runtime state, and applying guarded speed limiters with a dry-run-first workflow. It is written for operators who need to understand what the host can prove, what RayLimit will mutate, and why it sometimes refuses to guess.
+
+## What RayLimit Does
+
+RayLimit helps you:
+
+- discover Xray runtimes on a Linux host
+- inspect one runtime before touching traffic control state
+- preview concrete and blocked limiter paths without mutation
+- apply or remove managed `tc` and `nftables` state only when the evidence is trustworthy enough
+- reason about no-op, replace, and conservative cleanup outcomes from the same command surface
+
+## Supported Limiter Families
+
+The current product scope is intentionally narrow:
+
+| Family | Subject model | Current concrete truth |
+| --- | --- | --- |
+| `ip` | runtime-local `all` baseline, specific IP override, specific IP unlimited exception | concrete through direct `tc` attachment |
+| `inbound` | one runtime-local inbound tag | concrete when readable configuration proves one concrete TCP listener conservatively |
+| `outbound` | one runtime-local outbound tag | concrete when readable configuration proves one unique non-zero outbound socket mark without proxy indirection |
+
+Everything remains runtime-local. The same tag or IP value on another runtime is a separate subject with separate managed state.
+
+## What Makes RayLimit Different
+
+RayLimit is deliberately conservative:
+
+- discovery and inspection do not mutate the host
+- `limit` plans first and executes only with `--execute`
+- blocked execution is an explicit safety outcome, not a vague failure
+- remove only tears down state RayLimit can attribute to the selected subject
+- repeated commands can become no-op or replace decisions when the observed state already exists or differs
+
+That conservative model matters most on shared Linux hosts where traffic classification mistakes can affect more than one runtime.
+
+## First Workflow To Learn
+
+Use this sequence to understand the product quickly:
+
+```bash
+sudo raylimit discover
+sudo raylimit inspect --pid 1234
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+```
+
+That is enough to see:
+
+- runtime discovery
+- inspection of one selected target
+- a runtime-local IP baseline
+- a specific IP override
+- a specific IP unlimited exception that bypasses the baseline
+
+## Read The Docs In This Order
+
+1. Start with [Getting Started](/getting-started) if you are setting up a host or evaluating the CLI for the first time.
+2. Continue to [Quick Start](/getting-started/quick-start) for a copyable operator flow.
+3. Read [Command Usage](/commands) to understand `discover`, `inspect`, and `limit` in detail.
+4. Use [Speed Limiters](/limiters) for the family-specific execution model.
+5. Keep [Behavior](/behavior) and [Reference](/reference) open when validating or troubleshooting live state.
+
+## Documentation Structure
+
+- [Getting Started](/getting-started) covers installation, first-host checks, and the recommended operational order.
+- [Core Concepts](/core-concepts) explains runtime-local scope, subject selection, backend truth, and why RayLimit blocks unsafe execution.
+- [Command Usage](/commands) documents the public CLI with realistic examples and flag interactions.
+- [Speed Limiters](/limiters) explains `ip`, `inbound`, and `outbound` in practical operator terms.
+- [Behavior](/behavior) explains precedence, reconcile decisions, remove, no-op, replace, and cleanup.
+- [Examples](/examples) provides scenario-driven command sequences.
+- [Reference](/reference) keeps validation, troubleshooting, and glossary pages together.

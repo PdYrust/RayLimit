@@ -1,0 +1,70 @@
+# inspect
+
+`inspect` enriches discovered runtime targets with local metadata and API capability hints.
+
+## Basic Usage
+
+```bash
+raylimit inspect
+raylimit inspect --pid 1234
+raylimit inspect --container xray-edge --format json
+```
+
+## What `inspect` Adds Beyond `discover`
+
+Inspection is where you move from “this runtime exists” to “this is the runtime I intend to touch.”
+
+It helps you understand:
+
+- which runtime you are about to shape
+- whether the runtime metadata is readable
+- whether API capability hints are available
+- whether later inbound or outbound selector derivation is likely to be meaningful
+
+## Selection Flags
+
+`inspect` supports:
+
+- `--pid <pid>`
+- `--container <id-or-name>`
+- `--name <name>`
+- `--source host_process|docker_container`
+- `--all`
+
+If multiple targets match and `--all` is not set, RayLimit returns a selection error instead of choosing one target silently.
+
+## Useful Inspection Patterns
+
+Inspect one runtime by PID:
+
+```bash
+sudo raylimit inspect --pid 1234
+```
+
+Inspect one container runtime:
+
+```bash
+sudo raylimit inspect --source docker_container --container xray-edge
+```
+
+Inspect every host-process runtime:
+
+```bash
+sudo raylimit inspect --source host_process --all
+```
+
+Inspect in JSON for automation:
+
+```bash
+sudo raylimit inspect --pid 1234 --format json
+```
+
+## Why Inspect Matters Before `limit`
+
+Inspection is especially important before `inbound` and `outbound` workflows because those families depend on readable runtime configuration for concrete selector derivation.
+
+Even for `ip`, inspection still matters because it confirms the runtime identity you are about to bind to one baseline, override, or unlimited exception.
+
+## Text Versus JSON
+
+Use text when reading at the terminal. Use JSON when the inspection result needs to be consumed by another tool or stored as validation evidence.

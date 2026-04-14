@@ -1,0 +1,106 @@
+# Validation
+
+Use this runbook when validating RayLimit on a real Linux host.
+
+## Host Readiness Checks
+
+```bash
+command -v raylimit
+command -v tc
+sudo -n true
+ip link show dev eth0
+```
+
+Expected outcome:
+
+- the binary is available
+- `tc` is installed
+- privilege escalation works if you plan to execute
+- the device you intend to shape exists
+
+## Safe Validation Order
+
+### 1. Confirm Basic CLI Health
+
+```bash
+raylimit version
+raylimit --help
+```
+
+### 2. Discover Candidate Runtimes
+
+```bash
+sudo raylimit discover
+sudo raylimit discover --format json
+```
+
+### 3. Inspect The Runtime You Plan To Touch
+
+```bash
+sudo raylimit inspect --pid 1234
+sudo raylimit inspect --pid 1234 --format json
+```
+
+### 4. Dry-Run The IP Baseline And Specific Variants
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+```
+
+At this point you are checking:
+
+- subject selection
+- address handling
+- baseline versus specific behavior
+- observation quality
+- decision clarity
+
+### 5. Dry-Run Inbound And Outbound
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048
+```
+
+For these families, the main validation goal is to confirm whether selector derivation is concrete or blocked.
+
+### 6. Execute Only Concrete Paths
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048 --execute
+```
+
+Use one concrete path first. Do not try to validate every family live at once.
+
+### 7. Repeat A Matching Request To Check No-Op
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
+```
+
+If the observed managed state already matches, the decision can become `no_op`.
+
+## Remove Validation
+
+Validate remove separately from apply:
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
+```
+
+Test specific-IP remove and baseline remove independently. They do not represent the same cleanup scope.
+
+## Good Validation Signals
+
+You have a strong result when:
+
+- runtime discovery is clear
+- inspection is readable in text and JSON
+- dry-run output explains the requested state and decision cleanly
+- live execution is concrete only in its safe scope
+- repeated matching requests can become no-op
+- remove only cleans managed state for the selected subject

@@ -192,6 +192,7 @@ func (s ClassState) AppliedState(subject limiter.Subject, direction Direction) (
 	}
 
 	applied := limiter.AppliedState{
+		Mode:      limiter.DesiredModeLimit,
 		Subject:   subject,
 		Limits:    limits,
 		Driver:    driverName,
@@ -229,123 +230,8 @@ func (s FilterState) Validate() error {
 	return nil
 }
 
-// UUIDAggregateAttachmentFilters returns observed u32 filters that already
-// target the selected shared UUID aggregate class. These filters are safe
-// cleanup candidates during aggregate remove when their preference and flowid
-// are both visible in observed tc state.
-func (s Snapshot) UUIDAggregateAttachmentFilters(rootHandle string, classID string) []FilterState {
-	if err := validateHandleMajor(rootHandle); err != nil {
-		return nil
-	}
-	if err := validateClassID(classID, rootHandle); err != nil {
-		return nil
-	}
-
-	filters := make([]FilterState, 0, len(s.Filters))
-	for _, filter := range s.Filters {
-		if strings.TrimSpace(filter.Kind) != "u32" {
-			continue
-		}
-		if strings.TrimSpace(filter.Parent) != strings.TrimSpace(rootHandle) {
-			continue
-		}
-		protocol := strings.ToLower(strings.TrimSpace(filter.Protocol))
-		if protocol != "ip" && protocol != "ipv6" {
-			continue
-		}
-		if filter.Preference == 0 {
-			continue
-		}
-		if strings.TrimSpace(filter.FlowID) != strings.TrimSpace(classID) {
-			continue
-		}
-
-		filters = append(filters, filter)
-	}
-
-	sort.Slice(filters, func(i, j int) bool {
-		if filters[i].Preference != filters[j].Preference {
-			return filters[i].Preference < filters[j].Preference
-		}
-		left := strings.Join([]string{
-			filters[i].Kind,
-			filters[i].Parent,
-			filters[i].Protocol,
-			filters[i].FlowID,
-		}, "|")
-		right := strings.Join([]string{
-			filters[j].Kind,
-			filters[j].Parent,
-			filters[j].Protocol,
-			filters[j].FlowID,
-		}, "|")
-		return left < right
-	})
-
-	return filters
-}
-
-// EligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemoval reports whether
-// removing the selected shared class together with the currently observed
-// managed aggregate attachment filters would leave only the RayLimit-managed
-// root qdisc state.
-func (s Snapshot) EligibleForRootQDiscCleanupAfterUUIDAggregateAttachmentRemoval(rootHandle string, classID string) bool {
-	if err := validateHandleMajor(rootHandle); err != nil {
-		return false
-	}
-	if err := validateClassID(classID, rootHandle); err != nil {
-		return false
-	}
-	if len(s.QDiscs) != 1 || len(s.Classes) > 1 {
-		return false
-	}
-
-	managedFilters := s.UUIDAggregateAttachmentFilters(rootHandle, classID)
-	if len(managedFilters) == 0 {
-		return false
-	}
-	ignored := make(map[string]struct{}, len(managedFilters))
-	for _, filter := range managedFilters {
-		ignored[uuidAggregateAttachmentFilterKey(filter)] = struct{}{}
-	}
-
-	for _, filter := range s.Filters {
-		if strings.TrimSpace(filter.Kind) == "u32" &&
-			strings.TrimSpace(filter.Parent) == strings.TrimSpace(rootHandle) &&
-			strings.TrimSpace(filter.FlowID) == strings.TrimSpace(classID) {
-			if _, ok := ignored[uuidAggregateAttachmentFilterKey(filter)]; ok {
-				continue
-			}
-		}
-		return false
-	}
-
-	qdisc := s.QDiscs[0]
-	if strings.TrimSpace(qdisc.Kind) != "htb" {
-		return false
-	}
-	if strings.TrimSpace(qdisc.Handle) != strings.TrimSpace(rootHandle) {
-		return false
-	}
-	if strings.TrimSpace(qdisc.Parent) != "root" {
-		return false
-	}
-
-	if len(s.Classes) == 1 {
-		class := s.Classes[0]
-		if strings.TrimSpace(class.ClassID) != strings.TrimSpace(classID) {
-			return false
-		}
-		if strings.TrimSpace(class.Parent) != strings.TrimSpace(rootHandle) {
-			return false
-		}
-	}
-
-	return true
-}
-
 // DirectAttachmentFilters returns observed u32 filters that match the expected
-// direct attachment execution rules for one non-UUID limiter subject.
+// direct attachment execution rules for one direct limiter subject.
 func (s Snapshot) DirectAttachmentFilters(rootHandle string, classID string, execution DirectAttachmentExecution) []FilterState {
 	return directAttachmentFilters(s.Filters, rootHandle, classID, execution)
 }
@@ -448,9 +334,7 @@ func (s Snapshot) EligibleForRootQDiscCleanupAfterDirectAttachmentRemoval(rootHa
 	ignoredKeys := execution.filterExpectationKeys()
 
 	for _, filter := range s.Filters {
-		if strings.TrimSpace(filter.Kind) == "u32" &&
-			strings.TrimSpace(filter.Parent) == strings.TrimSpace(rootHandle) &&
-			strings.TrimSpace(filter.FlowID) == strings.TrimSpace(classID) {
+		if strings.TrimSpace(filter.Parent) == strings.TrimSpace(rootHandle) {
 			if _, ok := ignoredKeys[directAttachmentFilterKey(filter)]; ok {
 				continue
 			}

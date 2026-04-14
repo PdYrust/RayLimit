@@ -28,7 +28,7 @@ func (r *fakeRunner) Run(_ context.Context, command Command) (Result, error) {
 func testPlan(t *testing.T) Plan {
 	t.Helper()
 
-	desired := testDesiredState(t, policy.TargetKindConnection, 2048, 0)
+	desired := testDesiredState(t, policy.TargetKindOutbound, 2048, 0)
 	action := limiter.Action{
 		Kind:    limiter.ActionInspect,
 		Subject: desired.Subject,

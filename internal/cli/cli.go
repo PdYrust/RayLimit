@@ -6,7 +6,6 @@ import (
 	"io"
 
 	"github.com/PdYrust/RayLimit/internal/buildinfo"
-	"github.com/PdYrust/RayLimit/internal/correlation"
 	"github.com/PdYrust/RayLimit/internal/discovery"
 	"github.com/PdYrust/RayLimit/internal/limiter"
 	"github.com/PdYrust/RayLimit/internal/privilege"
@@ -25,7 +24,6 @@ type discoveryService interface {
 
 type tcPlanner interface {
 	Plan(action limiter.Action, scope tc.Scope) (tc.Plan, error)
-	PlanUUIDAggregate(input tc.UUIDAggregatePlanInput) (tc.UUIDAggregatePlan, error)
 }
 
 type tcStateInspector interface {
@@ -44,31 +42,16 @@ type outboundMarkSelectorDeriver interface {
 	Derive(ctx context.Context, target discovery.RuntimeTarget, outboundTag string) (discovery.OutboundMarkSelectorResult, error)
 }
 
-type uuidNonIPBackendCandidateDeriver interface {
-	Derive(ctx context.Context, target discovery.RuntimeTarget, uuid string) (discovery.UUIDNonIPBackendCandidate, error)
-}
-
-type uuidRoutingEvidenceProvider interface {
-	ObserveUUIDRoutingEvidence(ctx context.Context, runtime discovery.SessionRuntime, uuid string) (discovery.UUIDRoutingEvidenceResult, error)
-}
-
-type uuidCorrelator interface {
-	Correlate(ctx context.Context, req correlation.UUIDRequest) (correlation.UUIDResult, error)
-}
-
 type App struct {
-	discovery           discoveryService
-	limiterPlanner      tcPlanner
-	tcInspector         tcStateInspector
-	nftInspector        nftablesStateInspector
-	tcRunner            tc.Runner
-	uuidCorrelator      uuidCorrelator
-	inboundSelector     inboundMarkSelectorDeriver
-	outboundSelector    outboundMarkSelectorDeriver
-	uuidNonIPBackend    uuidNonIPBackendCandidateDeriver
-	uuidRoutingEvidence uuidRoutingEvidenceProvider
-	privilegeStatus     func() privilege.Status
-	logging             loggingModel
+	discovery        discoveryService
+	limiterPlanner   tcPlanner
+	tcInspector      tcStateInspector
+	nftInspector     nftablesStateInspector
+	tcRunner         tc.Runner
+	inboundSelector  inboundMarkSelectorDeriver
+	outboundSelector outboundMarkSelectorDeriver
+	privilegeStatus  func() privilege.Status
+	logging          loggingModel
 }
 
 type command struct {

@@ -1,0 +1,48 @@
+# Core Concepts
+
+RayLimit stays understandable because the product model is small and explicit:
+
+- choose one runtime target
+- choose one limiter family and one subject
+- plan one direction at a time
+- compare host state when possible
+- execute only on concrete evidence
+
+## The Product Ideas That Matter Most
+
+### Runtime-Local Scope
+
+Every limiter belongs to one selected runtime target. Another runtime with the same tag or a similar IP string is a separate subject with separate managed state.
+
+### Dry-Run First
+
+Planning is the default. RayLimit treats the dry-run report as the operator-facing contract for what it observed, how it evaluated the state, and what it would execute.
+
+### Concrete Or Blocked
+
+RayLimit does not collapse uncertainty into action. When it cannot derive a concrete selector or compare state safely enough, it blocks live execution instead of guessing.
+
+### Reconcile Awareness
+
+RayLimit is not “apply only.” The same request can produce:
+
+- `apply` when nothing exists yet
+- `no_op` when the correct state is already present
+- `replace` when observed state exists but differs from the desired state
+- `remove` when managed state exists without a desired state
+
+## Why The Families Behave Differently
+
+The limiter families share the same operator surface but not the same backend truth:
+
+- `ip` uses direct client-IP `tc` attachment
+- `inbound` depends on deriving one concrete listener-qualified selector
+- `outbound` depends on deriving one concrete socket-mark-qualified selector
+
+That is why IP is direct and concrete more often, while inbound and outbound stay conservative when runtime evidence is weak or ambiguous.
+
+## How To Read The Rest Of The Docs
+
+- Use [Runtime Targeting](/core-concepts/runtime-targeting) to understand how RayLimit identifies one runtime.
+- Use [Traffic Selection](/core-concepts/traffic-selection) to understand how the supported families differ.
+- Use [Behavior](/behavior) when you want to understand precedence, replace, no-op, and cleanup.

@@ -8,13 +8,11 @@ import (
 )
 
 // Session represents a single active runtime connection.
-// A policy identity such as a UUID may be shared across multiple sessions.
 type Session struct {
-	ID      string                `json:"id,omitempty"`
-	Runtime SessionRuntime        `json:"runtime"`
-	Policy  SessionPolicyIdentity `json:"policy,omitempty"`
-	Client  SessionClient         `json:"client,omitempty"`
-	Route   SessionRoute          `json:"route,omitempty"`
+	ID      string         `json:"id,omitempty"`
+	Runtime SessionRuntime `json:"runtime"`
+	Client  SessionClient  `json:"client,omitempty"`
+	Route   SessionRoute   `json:"route,omitempty"`
 }
 
 // Validate checks that a session is internally consistent.
@@ -28,13 +26,6 @@ func (s Session) Validate() error {
 	}
 
 	return nil
-}
-
-// SamePolicyIdentity reports whether two sessions represent the same policy identity.
-// This does not imply they are the same connection.
-func (s Session) SamePolicyIdentity(other Session) bool {
-	key := s.Policy.Key()
-	return key != "" && key == other.Policy.Key()
 }
 
 // SessionRuntime links a session to the runtime instance that owns it.
@@ -126,16 +117,6 @@ func SessionRuntimeFromTarget(target RuntimeTarget) (SessionRuntime, error) {
 	}
 
 	return runtime, nil
-}
-
-// SessionPolicyIdentity captures the policy-facing identity for a session.
-type SessionPolicyIdentity struct {
-	UUID string `json:"uuid,omitempty"`
-}
-
-// Key returns a normalized policy identity key suitable for correlation.
-func (i SessionPolicyIdentity) Key() string {
-	return strings.ToLower(strings.TrimSpace(i.UUID))
 }
 
 // SessionClient identifies the client side of a session.

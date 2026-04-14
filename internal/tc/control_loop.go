@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PdYrust/RayLimit/internal/correlation"
 	"github.com/PdYrust/RayLimit/internal/discovery"
 )
 
@@ -44,25 +43,13 @@ func (k ControlLoopOutcomeKind) Valid() bool {
 // ControlLoopRuntimeSignals carries at most one authoritative runtime-derived
 // evidence source for one owner in one control-loop cycle.
 type ControlLoopRuntimeSignals struct {
-	RuntimeEvidence       *discovery.RuntimeEvidenceChurnDecision  `json:"runtime_evidence,omitempty"`
-	UUIDMembershipRefresh *correlation.UUIDMembershipRefreshResult `json:"uuid_membership_refresh,omitempty"`
-	UUIDMembershipGrace   *correlation.UUIDMembershipGraceResult   `json:"uuid_membership_grace,omitempty"`
+	RuntimeEvidence *discovery.RuntimeEvidenceChurnDecision `json:"runtime_evidence,omitempty"`
 }
 
 func (s ControlLoopRuntimeSignals) Validate() error {
 	if s.RuntimeEvidence != nil {
 		if err := s.RuntimeEvidence.Validate(); err != nil {
 			return fmt.Errorf("invalid runtime evidence churn decision: %w", err)
-		}
-	}
-	if s.UUIDMembershipRefresh != nil {
-		if err := s.UUIDMembershipRefresh.Validate(); err != nil {
-			return fmt.Errorf("invalid uuid membership refresh result: %w", err)
-		}
-	}
-	if s.UUIDMembershipGrace != nil {
-		if err := s.UUIDMembershipGrace.Validate(); err != nil {
-			return fmt.Errorf("invalid uuid membership grace result: %w", err)
 		}
 	}
 	if s.authoritativeSourceCount() > 1 {
@@ -75,12 +62,6 @@ func (s ControlLoopRuntimeSignals) Validate() error {
 func (s ControlLoopRuntimeSignals) authoritativeSourceCount() int {
 	count := 0
 	if s.RuntimeEvidence != nil {
-		count++
-	}
-	if s.UUIDMembershipRefresh != nil {
-		count++
-	}
-	if s.UUIDMembershipGrace != nil {
 		count++
 	}
 
@@ -122,28 +103,6 @@ func (i ControlLoopInput) Validate() error {
 	}
 	if err := i.RuntimeSignals.Validate(); err != nil {
 		return fmt.Errorf("invalid runtime signals: %w", err)
-	}
-	ownerKey := controlLoopOwnerKey(i.Desired, i.Observed)
-	if i.RuntimeSignals.UUIDMembershipRefresh != nil {
-		if err := validateControlLoopUUIDSignalOwner(ownerKey, i.RuntimeSignals.UUIDMembershipRefresh.Subject.Key(), "uuid membership refresh"); err != nil {
-			return err
-		}
-	}
-	if i.RuntimeSignals.UUIDMembershipGrace != nil {
-		if err := validateControlLoopUUIDSignalOwner(ownerKey, i.RuntimeSignals.UUIDMembershipGrace.Subject.Key(), "uuid membership grace"); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func validateControlLoopUUIDSignalOwner(ownerKey string, signalOwnerKey string, signalName string) error {
-	if strings.TrimSpace(ownerKey) == "" {
-		return fmt.Errorf("%s signal requires a requested control-loop owner", strings.TrimSpace(signalName))
-	}
-	if strings.TrimSpace(signalOwnerKey) != strings.TrimSpace(ownerKey) {
-		return fmt.Errorf("%s signal does not match the requested control-loop owner", strings.TrimSpace(signalName))
 	}
 
 	return nil
@@ -332,57 +291,11 @@ type controlLoopSignalState struct {
 
 func deriveControlLoopSignalState(signals ControlLoopRuntimeSignals) (controlLoopSignalState, error) {
 	switch {
-	case signals.UUIDMembershipGrace != nil:
-		return controlLoopSignalStateFromUUIDMembershipGrace(*signals.UUIDMembershipGrace), nil
-	case signals.UUIDMembershipRefresh != nil:
-		return controlLoopSignalStateFromUUIDMembershipRefresh(*signals.UUIDMembershipRefresh)
 	case signals.RuntimeEvidence != nil:
 		return controlLoopSignalStateFromRuntimeEvidence(*signals.RuntimeEvidence), nil
 	default:
 		return controlLoopSignalState{}, nil
 	}
-}
-
-func controlLoopSignalStateFromUUIDMembershipGrace(result correlation.UUIDMembershipGraceResult) controlLoopSignalState {
-	restartEvidence := runtimeEvidenceChurnFromUUIDMembershipGrace(result)
-	state := controlLoopSignalState{
-		RetainEvidence:  reconcileRetainEvidenceFromUUIDMembershipGrace(result),
-		RestartEvidence: &restartEvidence,
-		Reason:          restartEvidence.Reason,
-	}
-
-	switch result.Action {
-	case discovery.RuntimeEvidenceChurnActionGraceRetained:
-		state.GraceRetained = true
-		state.GraceUntil = copyTimePtr(result.GraceUntil)
-	case discovery.RuntimeEvidenceChurnActionRefreshRequired:
-		state.RefreshRequired = true
-	case discovery.RuntimeEvidenceChurnActionDefer:
-		state.Defer = true
-	}
-
-	return state
-}
-
-func controlLoopSignalStateFromUUIDMembershipRefresh(result correlation.UUIDMembershipRefreshResult) (controlLoopSignalState, error) {
-	restartEvidence, err := runtimeEvidenceChurnFromUUIDMembershipRefresh(result)
-	if err != nil {
-		return controlLoopSignalState{}, err
-	}
-
-	state := controlLoopSignalState{
-		RetainEvidence:  reconcileRetainEvidenceFromUUIDMembershipRefresh(result),
-		RestartEvidence: &restartEvidence,
-		Reason:          restartEvidence.Reason,
-	}
-	switch restartEvidence.Action {
-	case discovery.RuntimeEvidenceChurnActionRefreshRequired:
-		state.RefreshRequired = true
-	case discovery.RuntimeEvidenceChurnActionDefer:
-		state.Defer = true
-	}
-
-	return state, nil
 }
 
 func controlLoopSignalStateFromRuntimeEvidence(decision discovery.RuntimeEvidenceChurnDecision) controlLoopSignalState {
@@ -545,75 +458,6 @@ func reconcileRetainEvidenceFromRuntimeChurn(decision discovery.RuntimeEvidenceC
 	}
 
 	return evidence
-}
-
-func reconcileRetainEvidenceFromUUIDMembershipRefresh(result correlation.UUIDMembershipRefreshResult) ReconcileRetainEvidence {
-	evidence := ReconcileRetainEvidence{Reason: result.Reason}
-	if result.Freshness != discovery.RuntimeEvidenceFreshnessFresh || result.Membership == nil || result.Membership.MemberCount() == 0 {
-		return evidence
-	}
-
-	switch result.Action {
-	case correlation.UUIDMembershipRefreshReuseCached, correlation.UUIDMembershipRefreshRefreshed:
-		evidence.AllowsRetain = true
-		evidence.AllowsRecreate = true
-	}
-
-	return evidence
-}
-
-func reconcileRetainEvidenceFromUUIDMembershipGrace(result correlation.UUIDMembershipGraceResult) ReconcileRetainEvidence {
-	evidence := ReconcileRetainEvidence{Reason: result.Reason}
-	if result.EffectiveMembership == nil || result.EffectiveMembership.MemberCount() == 0 {
-		return evidence
-	}
-
-	switch result.Action {
-	case discovery.RuntimeEvidenceChurnActionStable:
-		evidence.AllowsRetain = true
-		evidence.AllowsRecreate = true
-	case discovery.RuntimeEvidenceChurnActionGraceRetained:
-		evidence.AllowsRetain = true
-	}
-
-	return evidence
-}
-
-func runtimeEvidenceChurnFromUUIDMembershipGrace(result correlation.UUIDMembershipGraceResult) discovery.RuntimeEvidenceChurnDecision {
-	return discovery.RuntimeEvidenceChurnDecision{
-		Action:     result.Action,
-		GraceUntil: copyTimePtr(result.GraceUntil),
-		Reason:     result.Reason,
-	}
-}
-
-func runtimeEvidenceChurnFromUUIDMembershipRefresh(result correlation.UUIDMembershipRefreshResult) (discovery.RuntimeEvidenceChurnDecision, error) {
-	decision := discovery.RuntimeEvidenceChurnDecision{
-		Reason: result.Reason,
-	}
-
-	switch result.Action {
-	case correlation.UUIDMembershipRefreshReuseCached, correlation.UUIDMembershipRefreshRefreshed:
-		if result.Freshness == discovery.RuntimeEvidenceFreshnessFresh && result.Membership != nil && result.Membership.MemberCount() > 0 {
-			decision.Action = discovery.RuntimeEvidenceChurnActionStable
-			decision.Reason = "fresh uuid membership refresh still proves live members are present; runtime-derived ownership can be retained cheaply"
-			break
-		}
-		decision.Action = discovery.RuntimeEvidenceChurnActionRefreshRequired
-		decision.Reason = "uuid membership refresh did not retain fresh live members strongly enough to skip a follow-up refresh or grace evaluation"
-	case correlation.UUIDMembershipRefreshRefreshRequired:
-		decision.Action = discovery.RuntimeEvidenceChurnActionRefreshRequired
-	case correlation.UUIDMembershipRefreshEvidencePartial, correlation.UUIDMembershipRefreshEvidenceUnavailable:
-		decision.Action = discovery.RuntimeEvidenceChurnActionDefer
-	default:
-		return discovery.RuntimeEvidenceChurnDecision{}, fmt.Errorf("unsupported uuid membership refresh action %q", result.Action)
-	}
-
-	if err := decision.Validate(); err != nil {
-		return discovery.RuntimeEvidenceChurnDecision{}, err
-	}
-
-	return decision, nil
 }
 
 func copyTimePtr(value *time.Time) *time.Time {

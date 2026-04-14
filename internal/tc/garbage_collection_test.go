@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PdYrust/RayLimit/internal/limiter"
 	"github.com/PdYrust/RayLimit/internal/policy"
 )
 
@@ -65,6 +66,128 @@ func TestGarbageCollectorPlansDirectAttachmentCleanupDelta(t *testing.T) {
 		gcPlan.Steps[1].Name != "delete-stale-class-1" ||
 		gcPlan.Steps[2].Name != "delete-stale-root-qdisc-1" {
 		t.Fatalf("unexpected direct stale cleanup step order, got %#v", gcPlan.Steps)
+	}
+}
+
+func TestGarbageCollectorPlansBaselineMatchAllCleanupDelta(t *testing.T) {
+	desired := testDesiredStateForPolicy(t, policy.Policy{
+		Name: "ip-all-limit",
+		Target: policy.Target{
+			Kind: policy.TargetKindIP,
+			All:  true,
+		},
+		Limits: policy.LimitPolicy{
+			Upload: &policy.RateLimit{BytesPerSecond: 2048},
+		},
+	})
+	plan, err := (Planner{}).Plan(limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: desired.Subject,
+		Desired: &desired,
+	}, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	})
+	if err != nil {
+		t.Fatalf("expected baseline plan to succeed, got %v", err)
+	}
+
+	snapshot := Snapshot{
+		Device: "eth0",
+		QDiscs: []QDiscState{{Kind: "htb", Handle: plan.Handles.RootHandle, Parent: "root"}},
+		Classes: []ClassState{{
+			Kind:    "htb",
+			ClassID: plan.Handles.ClassID,
+			Parent:  plan.Handles.RootHandle,
+		}},
+		Filters: []FilterState{{
+			Kind:       "matchall",
+			Parent:     plan.Handles.RootHandle,
+			Preference: plan.AttachmentExecution.Rules[0].Preference,
+			FlowID:     plan.Handles.ClassID,
+		}},
+	}
+
+	observed, err := ObservedManagedState(snapshot, NftablesSnapshot{}, plan)
+	if err != nil {
+		t.Fatalf("expected observed baseline managed state to succeed, got %v", err)
+	}
+	reconcile := testCleanupStaleReconcileResult(t, observed)
+
+	gcPlan, err := (GarbageCollector{}).Plan(GarbageCollectionInput{
+		Reconcile:        reconcile,
+		Snapshot:         snapshot,
+		NftablesSnapshot: NftablesSnapshot{},
+	})
+	if err != nil {
+		t.Fatalf("expected baseline stale GC plan to succeed, got %v", err)
+	}
+
+	if len(gcPlan.Steps) != 3 {
+		t.Fatalf("expected baseline cleanup to remove filter, class, and root qdisc, got %#v", gcPlan.Steps)
+	}
+	if got := strings.Join(gcPlan.Steps[0].Command.Args, " "); !strings.Contains(got, "matchall") {
+		t.Fatalf("expected baseline GC to remove a stale matchall filter, got %q", got)
+	}
+}
+
+func TestGarbageCollectorPlansUnlimitedDirectAttachmentCleanupDelta(t *testing.T) {
+	desired := testDesiredStateForPolicy(t, policy.Policy{
+		Name:   "ip-unlimited",
+		Effect: policy.EffectExclude,
+		Target: policy.Target{
+			Kind:  policy.TargetKindIP,
+			Value: "203.0.113.10",
+		},
+	})
+	plan, err := (Planner{}).Plan(limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: desired.Subject,
+		Desired: &desired,
+	}, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	})
+	if err != nil {
+		t.Fatalf("expected unlimited plan to succeed, got %v", err)
+	}
+
+	snapshot := Snapshot{
+		Device: "eth0",
+		QDiscs: []QDiscState{{Kind: "htb", Handle: plan.Handles.RootHandle, Parent: "root"}},
+		Filters: []FilterState{{
+			Kind:       "u32",
+			Parent:     plan.Handles.RootHandle,
+			Protocol:   "ip",
+			Preference: plan.AttachmentExecution.Rules[0].Preference,
+		}},
+	}
+
+	observed, err := ObservedManagedState(snapshot, NftablesSnapshot{}, plan)
+	if err != nil {
+		t.Fatalf("expected observed unlimited managed state to succeed, got %v", err)
+	}
+	reconcile := testCleanupStaleReconcileResult(t, observed)
+
+	gcPlan, err := (GarbageCollector{}).Plan(GarbageCollectionInput{
+		Reconcile:        reconcile,
+		Snapshot:         snapshot,
+		NftablesSnapshot: NftablesSnapshot{},
+	})
+	if err != nil {
+		t.Fatalf("expected unlimited stale GC plan to succeed, got %v", err)
+	}
+
+	if len(gcPlan.Steps) != 2 {
+		t.Fatalf("expected unlimited cleanup to remove the filter and root qdisc only, got %#v", gcPlan.Steps)
+	}
+	if gcPlan.Steps[0].Name != "delete-stale-direct-attachment-1" || gcPlan.Steps[1].Name != "delete-stale-root-qdisc-1" {
+		t.Fatalf("unexpected unlimited stale cleanup step order, got %#v", gcPlan.Steps)
+	}
+	for _, step := range gcPlan.Steps {
+		if step.Name == "delete-stale-class-1" {
+			t.Fatalf("expected unlimited stale cleanup to avoid class deletion, got %#v", gcPlan.Steps)
+		}
 	}
 }
 
@@ -155,69 +278,6 @@ func TestGarbageCollectorPlansMarkBackedCleanupIncludingTable(t *testing.T) {
 	}
 	if last := gcPlan.Steps[len(gcPlan.Steps)-1].Name; last != "delete-stale-root-qdisc-1" {
 		t.Fatalf("expected root qdisc cleanup to stay last, got %#v", gcPlan.Steps)
-	}
-}
-
-func TestGarbageCollectorPlansUUIDAggregateCleanupDelta(t *testing.T) {
-	plan, err := (Planner{}).PlanUUIDAggregate(UUIDAggregatePlanInput{
-		Operation: UUIDAggregateOperationApply,
-		Membership: testUUIDAggregateMembership(
-			t,
-			testUUIDAggregateSession("conn-1"),
-			testUUIDAggregateSession("conn-2"),
-		),
-		Scope: Scope{
-			Device:    "eth0",
-			Direction: DirectionUpload,
-		},
-		Limits: policy.LimitPolicy{
-			Upload: &policy.RateLimit{BytesPerSecond: 2048},
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected aggregate apply plan to succeed, got %v", err)
-	}
-
-	snapshot := Snapshot{
-		Device: "eth0",
-		QDiscs: []QDiscState{{Kind: "htb", Handle: plan.Handles.RootHandle, Parent: "root"}},
-		Classes: []ClassState{{
-			Kind:    "htb",
-			ClassID: plan.Handles.ClassID,
-			Parent:  plan.Handles.RootHandle,
-		}},
-		Filters: []FilterState{
-			{Kind: "u32", Parent: plan.Handles.RootHandle, Protocol: "ip", Preference: 120, FlowID: plan.Handles.ClassID},
-			{Kind: "u32", Parent: plan.Handles.RootHandle, Protocol: "ip", Preference: 140, FlowID: plan.Handles.ClassID},
-		},
-	}
-
-	observed, err := ObservedUUIDAggregateManagedState(snapshot, NftablesSnapshot{}, plan)
-	if err != nil {
-		t.Fatalf("expected observed aggregate managed state to succeed, got %v", err)
-	}
-	reconcile := testCleanupStaleReconcileResult(t, observed)
-
-	gcPlan, err := (GarbageCollector{}).Plan(GarbageCollectionInput{
-		Reconcile:        reconcile,
-		Snapshot:         snapshot,
-		NftablesSnapshot: NftablesSnapshot{},
-	})
-	if err != nil {
-		t.Fatalf("expected aggregate stale GC plan to succeed, got %v", err)
-	}
-
-	if gcPlan.Kind != GarbageCollectionOutcomeCleanupDelta {
-		t.Fatalf("expected cleanup_delta aggregate GC outcome, got %#v", gcPlan)
-	}
-	if len(gcPlan.Steps) != 4 {
-		t.Fatalf("expected aggregate stale cleanup to remove two filters, class, and root qdisc, got %#v", gcPlan.Steps)
-	}
-	if gcPlan.Steps[0].Name != "delete-stale-aggregate-attachment-1" ||
-		gcPlan.Steps[1].Name != "delete-stale-aggregate-attachment-2" ||
-		gcPlan.Steps[2].Name != "delete-stale-class-1" ||
-		gcPlan.Steps[3].Name != "delete-stale-root-qdisc-1" {
-		t.Fatalf("unexpected aggregate stale cleanup step order, got %#v", gcPlan.Steps)
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 )
 
 const xrayOnlineIPSessionIDPrefix = "xray-online-ip:"
-const xrayOnlineUserSessionIDPrefix = "xray-online-user:"
 
 type xrayAPICommandRunner func(ctx context.Context, server string, command string, args ...string) ([]byte, error)
 type xrayContainerAPICommandRunner func(ctx context.Context, containerID string, server string, command string, args ...string) ([]byte, error)
@@ -22,8 +21,7 @@ type xrayGetAllOnlineUsersResponse struct {
 }
 
 type xrayGetStatsOnlineIPListResponse struct {
-	Name string           `json:"name"`
-	IPs  map[string]int64 `json:"ips"`
+	IPs map[string]int64 `json:"ips"`
 }
 
 type xraySessionQueryError struct {
@@ -49,12 +47,8 @@ func IsXrayOnlineIPSessionID(sessionID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(sessionID), xrayOnlineIPSessionIDPrefix)
 }
 
-func IsXrayOnlineUserSessionID(sessionID string) bool {
-	return strings.HasPrefix(strings.TrimSpace(sessionID), xrayOnlineUserSessionIDPrefix)
-}
-
 func IsXrayLiveEvidenceSessionID(sessionID string) bool {
-	return IsXrayOnlineIPSessionID(sessionID) || IsXrayOnlineUserSessionID(sessionID)
+	return IsXrayOnlineIPSessionID(sessionID)
 }
 
 func defaultXraySessionQuery(runner xrayAPICommandRunner, containerRunner xrayContainerAPICommandRunner) xraySessionQuery {
@@ -70,22 +64,6 @@ func defaultXraySessionQuery(runner xrayAPICommandRunner, containerRunner xrayCo
 		}
 
 		return queryXraySessions(ctx, runtime, endpoint, server, queryRunner)
-	}
-}
-
-func defaultXrayUUIDSessionQuery(runner xrayAPICommandRunner, containerRunner xrayContainerAPICommandRunner) xrayUUIDSessionQuery {
-	return func(ctx context.Context, target RuntimeTarget, endpoint APIEndpoint, uuid string) ([]SessionEvidence, error) {
-		runtime, err := SessionRuntimeFromTarget(target)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive runtime association for Xray uuid session querying: %w", err)
-		}
-
-		server, queryRunner, err := xrayQueryTransport(target, endpoint, runner, containerRunner)
-		if err != nil {
-			return nil, err
-		}
-
-		return queryXraySpecificUser(ctx, runtime, endpoint, server, strings.TrimSpace(uuid), queryRunner)
 	}
 }
 
@@ -154,9 +132,6 @@ func queryXraySessions(
 				Session: Session{
 					ID:      xrayOnlineIPSessionID(user, ip),
 					Runtime: runtime,
-					Policy: SessionPolicyIdentity{
-						UUID: user,
-					},
 					Client: SessionClient{
 						IP: ip,
 					},
@@ -171,80 +146,15 @@ func queryXraySessions(
 		left := evidence[i]
 		right := evidence[j]
 		leftKey := strings.Join([]string{
-			left.Session.Policy.Key(),
-			strings.TrimSpace(left.Session.Client.IP),
 			strings.TrimSpace(left.Session.ID),
+			strings.TrimSpace(left.Session.Client.IP),
 		}, "|")
 		rightKey := strings.Join([]string{
-			right.Session.Policy.Key(),
-			strings.TrimSpace(right.Session.Client.IP),
 			strings.TrimSpace(right.Session.ID),
+			strings.TrimSpace(right.Session.Client.IP),
 		}, "|")
 		return leftKey < rightKey
 	})
-
-	return evidence, nil
-}
-
-func queryXraySpecificUser(
-	ctx context.Context,
-	runtime SessionRuntime,
-	endpoint APIEndpoint,
-	server string,
-	uuid string,
-	runner func(ctx context.Context, command string, args ...string) ([]byte, error),
-) ([]SessionEvidence, error) {
-	uuid = strings.TrimSpace(uuid)
-	if uuid == "" {
-		return nil, newXraySessionQueryError(
-			SessionEvidenceIssueInsufficient,
-			"Xray live session querying requires a non-empty uuid for targeted membership lookup",
-		)
-	}
-
-	ips, name, err := queryXrayOnlineIPsWithName(ctx, runner, server, uuid)
-	if err != nil {
-		return nil, err
-	}
-	if len(ips) == 0 && strings.TrimSpace(name) == "" {
-		return nil, nil
-	}
-
-	if len(ips) == 0 {
-		return []SessionEvidence{
-			{
-				Runtime: runtime,
-				Session: Session{
-					ID:      xrayOnlineUserSessionID(uuid),
-					Runtime: runtime,
-					Policy: SessionPolicyIdentity{
-						UUID: uuid,
-					},
-				},
-				Confidence: SessionEvidenceConfidenceMedium,
-				Note:       fmt.Sprintf("observed via Xray StatsService online-user evidence through API endpoint %s; concrete client-ip evidence was not returned", describeAPIEndpoint(endpoint)),
-			},
-		}, nil
-	}
-
-	evidence := make([]SessionEvidence, 0, len(ips))
-	for _, ip := range ips {
-		evidence = append(evidence, SessionEvidence{
-			Runtime: runtime,
-			Session: Session{
-				ID:      xrayOnlineIPSessionID(uuid, ip),
-				Runtime: runtime,
-				Policy: SessionPolicyIdentity{
-					UUID: uuid,
-				},
-				Client: SessionClient{
-					IP: ip,
-				},
-			},
-			Confidence: SessionEvidenceConfidenceHigh,
-			Note:       fmt.Sprintf("observed via Xray StatsService online IP query through API endpoint %s", describeAPIEndpoint(endpoint)),
-		})
-	}
 
 	return evidence, nil
 }
@@ -364,19 +274,14 @@ func queryXrayOnlineUsers(ctx context.Context, runner func(context.Context, stri
 }
 
 func queryXrayOnlineIPs(ctx context.Context, runner func(context.Context, string, ...string) ([]byte, error), server string, user string) ([]string, error) {
-	ips, _, err := queryXrayOnlineIPsWithName(ctx, runner, server, user)
-	return ips, err
-}
-
-func queryXrayOnlineIPsWithName(ctx context.Context, runner func(context.Context, string, ...string) ([]byte, error), server string, user string) ([]string, string, error) {
 	output, err := runner(ctx, "statsonlineiplist", "-email", user)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	var response xrayGetStatsOnlineIPListResponse
 	if err := json.Unmarshal(output, &response); err != nil {
-		return nil, "", newXraySessionQueryError(
+		return nil, newXraySessionQueryError(
 			SessionEvidenceIssueInsufficient,
 			"Xray API endpoint %s returned an invalid online-ip response for user %q: %v",
 			server,
@@ -386,7 +291,7 @@ func queryXrayOnlineIPsWithName(ctx context.Context, runner func(context.Context
 	}
 
 	if len(response.IPs) == 0 {
-		return nil, strings.TrimSpace(response.Name), nil
+		return nil, nil
 	}
 
 	ips := make([]string, 0, len(response.IPs))
@@ -404,7 +309,7 @@ func queryXrayOnlineIPsWithName(ctx context.Context, runner func(context.Context
 	}
 	sort.Strings(ips)
 
-	return ips, strings.TrimSpace(response.Name), nil
+	return ips, nil
 }
 
 func normalizeXrayClientIP(value string) string {
@@ -425,11 +330,6 @@ func xrayOnlineIPSessionID(user string, ip string) string {
 	user = strings.ToLower(strings.TrimSpace(user))
 	ip = strings.TrimSpace(ip)
 	return xrayOnlineIPSessionIDPrefix + user + ":" + ip
-}
-
-func xrayOnlineUserSessionID(user string) string {
-	user = strings.ToLower(strings.TrimSpace(user))
-	return xrayOnlineUserSessionIDPrefix + user
 }
 
 func sessionQueryErrorCode(err error) (SessionEvidenceIssueCode, bool) {

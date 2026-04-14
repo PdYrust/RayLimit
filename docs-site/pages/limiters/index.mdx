@@ -1,0 +1,55 @@
+# Speed Limiters
+
+A speed limiter family defines the identity RayLimit uses to select traffic for shaping.
+
+## Current Family Comparison
+
+| Family | Selects traffic by | Best fit | Concrete execution truth |
+| --- | --- | --- | --- |
+| `ip` | visible client IP | runtime-local baseline, specific override, or specific exception | concrete |
+| `inbound` | inbound tag | one listener path needs its own cap | concrete when one concrete TCP listener can be derived conservatively |
+| `outbound` | outbound tag | one egress path needs its own cap | concrete when one unique non-zero socket mark can be derived conservatively |
+
+## Shared Operator Model
+
+All three families share the same outer contract:
+
+- one runtime-local subject
+- one direction at a time
+- dry-run first
+- explicit observation and decision reporting
+- conservative cleanup
+
+## The Important Differences
+
+### IP
+
+IP is direct. It can express:
+
+- a runtime-local `all` baseline
+- a specific per-IP override
+- a specific per-IP unlimited exception
+
+### Inbound
+
+Inbound is configuration-derived. It depends on proving one concrete TCP listener path for the selected tag.
+
+### Outbound
+
+Outbound is also configuration-derived. It depends on proving one unique non-zero socket mark for the selected tag without proxy indirection.
+
+## How To Choose
+
+Choose `ip` when visible client IP is the real control surface.
+
+Choose `inbound` when the listener path is the operational boundary you need to manage.
+
+Choose `outbound` when the egress route is the operational boundary you need to manage.
+
+If more than one family seems plausible, start with the one whose identity is most stable and easiest to verify on the host. In practice that is often `ip`.
+
+## Continue Reading
+
+- [IP](/limiters/ip)
+- [Inbound](/limiters/inbound)
+- [Outbound](/limiters/outbound)

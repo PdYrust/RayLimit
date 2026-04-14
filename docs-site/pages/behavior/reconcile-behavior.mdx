@@ -1,0 +1,79 @@
+# Reconcile Behavior
+
+RayLimit is reconcile-aware. It does not blindly reapply a rule every time you run `limit`.
+
+## What RayLimit Tries To Observe
+
+Before deciding what to do, RayLimit attempts to inspect:
+
+- the relevant `tc` state
+- the relevant `nftables` state when the family needs it
+- the expected class and attachment shape for the selected subject
+
+The quality of that observation matters because it changes whether the command can compare existing state honestly or must stay more conservative.
+
+## Decision Kinds
+
+The reconcile decision is explicit:
+
+| Decision | Operator meaning |
+| --- | --- |
+| `apply` | the selected subject has a desired state but no matching applied state |
+| `no_op` | the applied state already matches the desired state |
+| `replace` | applied state exists for the subject, but it differs from the desired state |
+| `remove` | applied state exists without a desired state |
+
+In operator language, `replace` is the reapply path. RayLimit uses that path when it sees the subject already has managed state, but that state is wrong, incomplete, or not comparable enough to preserve as-is.
+
+## How Dry-Run And Execute Relate
+
+Dry-run and execute share the same selection and decision model. The difference is whether the plan is only rendered or actually executed.
+
+That means a dry-run can already tell you:
+
+- whether the command is likely to be a no-op
+- whether the command is going to replace an existing state
+- whether remove is narrow or larger than expected
+- whether live execution will be blocked
+
+## IP Examples
+
+For the IP family:
+
+- a matching baseline class and matching baseline attachment can become `no_op`
+- a matching specific unlimited pass rule can become `no_op`
+- a matching class with a missing expected direct attachment can move into a `replace` path
+- remove for a specific IP clears the explicit specific rule forms for that subject
+
+That is why repeating the same command does not automatically mean repeated mutation.
+
+## Comparable Versus Missing Observation
+
+When observation is comparable, RayLimit can make a more precise decision about no-op, replace, or remove.
+
+When observation is missing or not comparable:
+
+- the report explains that state clearly
+- live execution can be blocked
+- `--allow-missing-tc-state` can be used only for explicit live-execution cases where you accept execution without prior observed `tc` state
+
+That flag is intentionally narrow because it weakens one of RayLimit’s main safety checks.
+
+## Conservative Cleanup
+
+Cleanup remains conservative:
+
+- remove targets the managed objects owned by the selected subject
+- root qdisc cleanup happens only when it still belongs to the remaining managed state model
+- RayLimit avoids claiming unrelated host state
+
+For IP in particular, this is what keeps specific-IP cleanup from accidentally collapsing the runtime-local baseline.
+
+## Why This Matters
+
+Reconcile awareness is what keeps the product usable on real hosts:
+
+- repeated commands do not have to mean repeated mutation
+- partial drift can be corrected without inventing a new host baseline
+- cleanup can stay narrow and attributable
+- operators can learn from the dry-run report before any live change happens

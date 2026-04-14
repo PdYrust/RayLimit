@@ -6,7 +6,6 @@ import (
 	"hash/fnv"
 	"strings"
 
-	"github.com/PdYrust/RayLimit/internal/correlation"
 	"github.com/PdYrust/RayLimit/internal/ipaddr"
 	"github.com/PdYrust/RayLimit/internal/limiter"
 	"github.com/PdYrust/RayLimit/internal/policy"
@@ -172,6 +171,9 @@ func (p Plan) Validate() error {
 		}
 	}
 	for index, rule := range p.AttachmentExecution.Rules {
+		if rule.Disposition != DirectAttachmentDispositionClassify {
+			continue
+		}
 		if strings.TrimSpace(rule.ClassID) != strings.TrimSpace(p.Handles.ClassID) {
 			return fmt.Errorf("attachment execution rule at index %d does not match the plan class id", index)
 		}
@@ -217,7 +219,8 @@ func (p Planner) Plan(action limiter.Action, scope Scope) (Plan, error) {
 	if err := plan.Handles.Validate(); err != nil {
 		return Plan{}, err
 	}
-	attachmentExecution, err := BuildDirectAttachmentExecution(binding, scope, plan.Handles.ClassID)
+	mode := attachmentModeForAction(action)
+	attachmentExecution, err := BuildDirectAttachmentExecution(binding, scope, mode, attachmentClassID(mode, plan.Handles))
 	if err != nil {
 		return Plan{}, err
 	}
@@ -247,14 +250,17 @@ func (p Planner) Plan(action limiter.Action, scope Scope) (Plan, error) {
 }
 
 func (p Planner) applySteps(plan Plan, desired limiter.DesiredState) ([]Step, error) {
-	rate, err := rateForDirection(desired.Limits, plan.Scope.Direction)
-	if err != nil {
-		return nil, err
-	}
-
 	steps := []Step{
-		p.step("ensure-root-qdisc", "qdisc", "replace", "dev", plan.Scope.Device, "root", "handle", plan.Handles.RootHandle, "htb", "default", "1"),
-		p.step("upsert-class", "class", "replace", "dev", plan.Scope.Device, "parent", plan.Handles.RootHandle, "classid", plan.Handles.ClassID, "htb", "rate", rate, "ceil", rate),
+		p.step("ensure-root-qdisc", "qdisc", "replace", "dev", plan.Scope.Device, "root", "handle", plan.Handles.RootHandle, "htb"),
+	}
+	if desired.Mode == limiter.DesiredModeLimit {
+		rate, err := rateForDirection(desired.Limits, plan.Scope.Direction)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps,
+			p.step("upsert-class", "class", "replace", "dev", plan.Scope.Device, "parent", plan.Handles.RootHandle, "classid", plan.Handles.ClassID, "htb", "rate", rate, "ceil", rate),
+		)
 	}
 	if plan.AttachmentExecution.Readiness == BindingReadinessReady {
 		steps = append(steps, p.directAttachmentApplySteps(plan)...)
@@ -273,9 +279,16 @@ func (p Planner) removeSteps(plan Plan) ([]Step, error) {
 	if err != nil {
 		return nil, err
 	}
-	steps := make([]Step, 0, len(ids)+len(plan.AttachmentExecution.Rules))
-	if plan.AttachmentExecution.Readiness == BindingReadinessReady {
-		steps = append(steps, p.directAttachmentRemoveSteps(plan)...)
+	executions, err := p.removeAttachmentExecutions(plan, tcStates)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]Step, 0, len(ids))
+	nextAttachmentIndex := 1
+	for _, execution := range executions {
+		executionSteps := p.directAttachmentRemoveSteps(plan.Scope, plan.Handles.RootHandle, execution, nextAttachmentIndex)
+		steps = append(steps, executionSteps...)
+		nextAttachmentIndex += len(executionSteps)
 	}
 	for _, classID := range ids {
 		steps = append(steps, p.step("delete-class", "class", "del", "dev", plan.Scope.Device, "classid", classID))
@@ -292,17 +305,6 @@ func (p Planner) reconcileSteps(plan Plan, desired limiter.DesiredState, applied
 	tcStates, err := tcAppliedStates(applied)
 	if err != nil {
 		return nil, false, err
-	}
-
-	if _, err := rateForDirection(desired.Limits, plan.Scope.Direction); err != nil {
-		if len(tcStates) == 0 {
-			return nil, true, nil
-		}
-
-		removePlan := plan
-		removePlan.Action.Applied = tcStates
-		steps, removeErr := p.removeSteps(removePlan)
-		return steps, false, removeErr
 	}
 
 	for _, state := range tcStates {
@@ -339,6 +341,22 @@ func (p Planner) step(name string, args ...string) Step {
 			Args: args,
 		},
 	}
+}
+
+func attachmentModeForAction(action limiter.Action) limiter.DesiredMode {
+	if action.Desired != nil && action.Desired.Mode.Valid() {
+		return action.Desired.Mode
+	}
+
+	return limiter.DesiredModeLimit
+}
+
+func attachmentClassID(mode limiter.DesiredMode, handles Handles) string {
+	if mode == limiter.DesiredModeUnlimited {
+		return ""
+	}
+
+	return handles.ClassID
 }
 
 func (p Planner) binary() string {
@@ -380,6 +398,9 @@ func (p Planner) removeClassIDs(applied []limiter.AppliedState, handles Handles)
 	seen := make(map[string]struct{}, len(applied))
 	ids := make([]string, 0, len(applied))
 	for _, state := range applied {
+		if state.Mode != limiter.DesiredModeLimit {
+			continue
+		}
 		classID := strings.TrimSpace(state.Reference)
 		if classID == "" {
 			classID = handles.ClassID
@@ -395,6 +416,54 @@ func (p Planner) removeClassIDs(applied []limiter.AppliedState, handles Handles)
 	}
 
 	return ids, nil
+}
+
+func (p Planner) removeAttachmentExecutions(plan Plan, applied []limiter.AppliedState) ([]DirectAttachmentExecution, error) {
+	modes := possibleRemovalModes(plan.Action.Subject, applied)
+	if len(modes) == 0 {
+		return nil, nil
+	}
+
+	executions := make([]DirectAttachmentExecution, 0, len(modes))
+	for _, mode := range modes {
+		execution, err := BuildDirectAttachmentExecution(plan.Binding, plan.Scope, mode, attachmentClassID(mode, plan.Handles))
+		if err != nil {
+			return nil, err
+		}
+		if execution.Readiness != BindingReadinessReady {
+			continue
+		}
+		executions = append(executions, execution)
+	}
+
+	return executions, nil
+}
+
+func possibleRemovalModes(subject limiter.Subject, applied []limiter.AppliedState) []limiter.DesiredMode {
+	if subject.Kind == policy.TargetKindIP && !subject.All {
+		return []limiter.DesiredMode{
+			limiter.DesiredModeUnlimited,
+			limiter.DesiredModeLimit,
+		}
+	}
+
+	if len(applied) != 0 {
+		seen := make(map[limiter.DesiredMode]struct{}, len(applied))
+		modes := make([]limiter.DesiredMode, 0, len(applied))
+		for _, state := range applied {
+			if !state.Mode.Valid() {
+				continue
+			}
+			if _, ok := seen[state.Mode]; ok {
+				continue
+			}
+			seen[state.Mode] = struct{}{}
+			modes = append(modes, state.Mode)
+		}
+		return modes
+	}
+
+	return []limiter.DesiredMode{limiter.DesiredModeLimit}
 }
 
 // AppendRootQDiscCleanup adds a conservative root-qdisc delete step to a remove plan.
@@ -458,14 +527,6 @@ func deriveClassID(subject limiter.Subject, direction Direction, rootHandle stri
 	return deriveDeterministicClassID(subjectKey(subject, direction), rootHandle)
 }
 
-func deriveUUIDAggregateClassID(subject correlation.UUIDAggregateSubject, direction Direction, rootHandle string) string {
-	return deriveDeterministicClassID(strings.Join([]string{
-		"uuid-aggregate",
-		string(direction),
-		subject.Key(),
-	}, "|"), rootHandle)
-}
-
 func deriveDeterministicClassID(key string, rootHandle string) string {
 	major := strings.TrimSuffix(rootHandle, ":")
 	hash := fnv.New32a()
@@ -477,7 +538,9 @@ func deriveDeterministicClassID(key string, rootHandle string) string {
 
 func subjectKey(subject limiter.Subject, direction Direction) string {
 	value := strings.TrimSpace(subject.Value)
-	if subject.Kind == policy.TargetKindIP {
+	if subject.Kind == policy.TargetKindIP && subject.All {
+		value = "all"
+	} else if subject.Kind == policy.TargetKindIP {
 		if normalized, err := ipaddr.Normalize(value); err == nil {
 			value = normalized
 		}
@@ -492,7 +555,6 @@ func subjectKey(subject limiter.Subject, direction Direction) string {
 		strings.TrimSpace(subject.Binding.Runtime.Name),
 		fmt.Sprintf("%d", subject.Binding.Runtime.HostPID),
 		strings.TrimSpace(subject.Binding.Runtime.ContainerID),
-		strings.TrimSpace(subject.Binding.SessionID),
 	}
 
 	return strings.Join(parts, "|")
@@ -572,37 +634,67 @@ func validateDevice(device string) error {
 func (p Planner) directAttachmentApplySteps(plan Plan) []Step {
 	steps := make([]Step, 0, len(plan.AttachmentExecution.Rules))
 	for index, rule := range plan.AttachmentExecution.Rules {
-		protocol := rule.protocolToken()
-		matchFamily := rule.matchFamilyToken()
-		prefixLength := rule.prefixLength()
-		steps = append(steps, p.step(
-			fmt.Sprintf("upsert-direct-attachment-%d", index+1),
-			"filter", "replace",
-			"dev", plan.Scope.Device,
-			"parent", plan.Handles.RootHandle,
-			"protocol", protocol,
-			"pref", fmt.Sprintf("%d", rule.Preference),
-			"u32",
-			"match", matchFamily, rule.MatchField.u32Token(), fmt.Sprintf("%s/%d", rule.Identity.Value, prefixLength),
-			"flowid", rule.ClassID,
-		))
+		switch rule.Classifier {
+		case DirectAttachmentClassifierMatchAll:
+			steps = append(steps, p.step(
+				fmt.Sprintf("upsert-direct-attachment-%d", index+1),
+				"filter", "replace",
+				"dev", plan.Scope.Device,
+				"parent", plan.Handles.RootHandle,
+				"pref", fmt.Sprintf("%d", rule.Preference),
+				"matchall",
+				"classid", rule.ClassID,
+			))
+		case DirectAttachmentClassifierU32:
+			protocol := rule.protocolToken()
+			matchFamily := rule.matchFamilyToken()
+			prefixLength := rule.prefixLength()
+			args := []string{
+				"filter", "replace",
+				"dev", plan.Scope.Device,
+				"parent", plan.Handles.RootHandle,
+				"protocol", protocol,
+				"pref", fmt.Sprintf("%d", rule.Preference),
+				"u32",
+				"match", matchFamily, rule.MatchField.u32Token(), fmt.Sprintf("%s/%d", rule.Identity.Value, prefixLength),
+			}
+			if rule.Disposition == DirectAttachmentDispositionClassify {
+				args = append(args, "flowid", rule.ClassID)
+			} else {
+				args = append(args, "action", "pass")
+			}
+			steps = append(steps, p.step(fmt.Sprintf("upsert-direct-attachment-%d", index+1), args...))
+		}
 	}
 
 	return steps
 }
 
-func (p Planner) directAttachmentRemoveSteps(plan Plan) []Step {
-	steps := make([]Step, 0, len(plan.AttachmentExecution.Rules))
-	for index, rule := range plan.AttachmentExecution.Rules {
-		steps = append(steps, p.step(
-			fmt.Sprintf("delete-direct-attachment-%d", index+1),
-			"filter", "del",
-			"dev", plan.Scope.Device,
-			"parent", plan.Handles.RootHandle,
-			"protocol", rule.protocolToken(),
-			"pref", fmt.Sprintf("%d", rule.Preference),
-			"u32",
-		))
+func (p Planner) directAttachmentRemoveSteps(scope Scope, rootHandle string, execution DirectAttachmentExecution, startIndex int) []Step {
+	steps := make([]Step, 0, len(execution.Rules))
+	for index, rule := range execution.Rules {
+		name := fmt.Sprintf("delete-direct-attachment-%d", startIndex+index)
+		switch rule.Classifier {
+		case DirectAttachmentClassifierMatchAll:
+			steps = append(steps, p.step(
+				name,
+				"filter", "del",
+				"dev", scope.Device,
+				"parent", rootHandle,
+				"pref", fmt.Sprintf("%d", rule.Preference),
+				"matchall",
+			))
+		case DirectAttachmentClassifierU32:
+			steps = append(steps, p.step(
+				name,
+				"filter", "del",
+				"dev", scope.Device,
+				"parent", rootHandle,
+				"protocol", rule.protocolToken(),
+				"pref", fmt.Sprintf("%d", rule.Preference),
+				"u32",
+			))
+		}
 	}
 
 	return steps

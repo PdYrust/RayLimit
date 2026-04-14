@@ -1,0 +1,102 @@
+# Quick Start
+
+This page walks through the intended operator flow from runtime discovery to a concrete limiter plan. It is the fastest way to understand how RayLimit behaves in practice.
+
+## 1. Discover Candidate Runtimes
+
+```bash
+sudo raylimit discover
+sudo raylimit discover --format json
+```
+
+Use text when you are selecting a target manually. Use JSON when another tool or script needs the runtime list.
+
+## 2. Inspect One Runtime
+
+```bash
+sudo raylimit inspect --pid 1234
+sudo raylimit inspect --pid 1234 --format json
+```
+
+Inspection gives you the runtime identity, source information, and API capability hints available from local discovery. It is the correct next step before you attempt limiter planning.
+
+## 3. Preview A Runtime-Local IP Baseline
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+```
+
+`--ip all` means “all visible client IPs on this selected runtime.” It does not mean all runtimes on the host and it does not mean a synthetic single-IP identity.
+
+## 4. Add A Specific Override
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
+```
+
+That command defines a specific rate for one address. When the specific rule and the baseline both match, the specific IP rule becomes the effective state for that address.
+
+## 5. Add A Specific Unlimited Exception
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
+```
+
+That command creates a specific no-limit exception. The selected IP bypasses the runtime-local baseline for that direction.
+
+## 6. Preview The Other Families
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048
+```
+
+Inbound and outbound stay conservative until RayLimit can derive a concrete selector from readable runtime configuration.
+
+## 7. Read The Dry-Run Report Correctly
+
+Before adding `--execute`, look at:
+
+- `Requested state`
+- `Observation`
+- `Decision`
+- `Plan`
+- `Outcome`
+
+If the path is blocked, RayLimit is telling you that the selector or observed state is not trustworthy enough for live mutation yet.
+
+If the path is already correct, the command can become a no-op. If the path exists but differs, the command can move into a replacement or reapply path instead of pretending the old state is fine.
+
+## 8. Execute Only After The Preview Looks Honest
+
+```bash
+sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048 --execute
+```
+
+Use live execution only when:
+
+- the selected runtime is correct
+- the subject is correct
+- the observed state is understandable
+- the plan matches what you intend to change
+
+## 9. Remove Managed State Conservatively
+
+```bash
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
+sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
+```
+
+Remove uses the same runtime and subject selection model as apply. It removes only the managed state RayLimit can attribute to that path.
+
+## 10. Remember That Direction Is Separate
+
+RayLimit plans one direction at a time:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction download --rate 4096
+```
+
+If you want both upload and download control, run both commands explicitly.

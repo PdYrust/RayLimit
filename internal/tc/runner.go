@@ -61,16 +61,6 @@ func (e Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
 	return e.executeSteps(ctx, plan.Steps)
 }
 
-// ExecuteUUIDAggregate validates a shared UUID aggregate plan and either runs
-// each step or returns skipped dry-run results.
-func (e Executor) ExecuteUUIDAggregate(ctx context.Context, plan UUIDAggregatePlan) ([]Result, error) {
-	if err := plan.Validate(); err != nil {
-		return nil, err
-	}
-
-	return e.executeSteps(ctx, plan.Steps)
-}
-
 func (e Executor) executeSteps(ctx context.Context, steps []Step) ([]Result, error) {
 	results := make([]Result, 0, len(steps))
 	if e.DryRun {

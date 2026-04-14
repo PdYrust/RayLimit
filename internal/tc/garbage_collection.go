@@ -214,9 +214,7 @@ func buildGarbageCollectionSteps(candidates []StaleManagedObject, snapshot Snaps
 	order := []ManagedObjectKind{
 		ManagedObjectDirectAttachmentFilter,
 		ManagedObjectMarkAttachmentFilter,
-		ManagedObjectUUIDAggregateAttachmentFilter,
 		ManagedObjectClass,
-		ManagedObjectUUIDAggregateClass,
 		ManagedObjectMarkAttachmentRule,
 		ManagedObjectMarkAttachmentRestoreRule,
 		ManagedObjectMarkAttachmentChain,
@@ -249,9 +247,7 @@ func appendGarbageCollectionStepsForObject(builder *garbageCollectionStepBuilder
 		return appendDirectAttachmentGarbageCollectionSteps(builder, object.Object, snapshot)
 	case ManagedObjectMarkAttachmentFilter:
 		return appendMarkAttachmentFilterGarbageCollectionSteps(builder, object.Object, snapshot)
-	case ManagedObjectUUIDAggregateAttachmentFilter:
-		return appendUUIDAggregateGarbageCollectionSteps(builder, object.Object, snapshot)
-	case ManagedObjectClass, ManagedObjectUUIDAggregateClass:
+	case ManagedObjectClass:
 		return appendClassGarbageCollectionStep(builder, object.Object, snapshot), nil
 	case ManagedObjectMarkAttachmentRule, ManagedObjectMarkAttachmentRestoreRule:
 		return appendMarkAttachmentRuleGarbageCollectionSteps(builder, object.Object, nftSnapshot)
@@ -267,29 +263,37 @@ func appendGarbageCollectionStepsForObject(builder *garbageCollectionStepBuilder
 }
 
 func appendDirectAttachmentGarbageCollectionSteps(builder *garbageCollectionStepBuilder, object ManagedObject, snapshot Snapshot) (bool, error) {
-	rootHandle, classID, protocol, preference, err := parseDirectAttachmentManagedObjectID(object.ID)
+	rootHandle, kind, protocol, preference, flowID, err := parseDirectAttachmentManagedObjectID(object.ID)
 	if err != nil {
 		return false, err
 	}
 
 	for _, filter := range snapshot.Filters {
-		if strings.TrimSpace(filter.Kind) != "u32" ||
+		if strings.ToLower(strings.TrimSpace(filter.Kind)) != kind ||
 			strings.TrimSpace(filter.Parent) != rootHandle ||
-			strings.TrimSpace(filter.FlowID) != classID ||
 			strings.ToLower(strings.TrimSpace(filter.Protocol)) != protocol ||
 			filter.Preference != preference {
 			continue
 		}
+		if strings.TrimSpace(filter.FlowID) != flowID {
+			continue
+		}
+
+		args := []string{
+			"filter", "del",
+			"dev", object.Device,
+			"parent", rootHandle,
+			"pref", fmt.Sprintf("%d", preference),
+		}
+		if kind == string(DirectAttachmentClassifierU32) {
+			args = append(args, "protocol", protocol, "u32")
+		} else {
+			args = append(args, "matchall")
+		}
+
 		return builder.appendStep("delete-stale-direct-attachment", Command{
 			Path: defaultBinary,
-			Args: []string{
-				"filter", "del",
-				"dev", object.Device,
-				"parent", rootHandle,
-				"protocol", protocol,
-				"pref", fmt.Sprintf("%d", preference),
-				"u32",
-			},
+			Args: args,
 		}), nil
 	}
 
@@ -334,37 +338,6 @@ func appendMarkAttachmentFilterGarbageCollectionSteps(builder *garbageCollection
 				"pref", fmt.Sprintf("%d", filter.Preference),
 				"handle", handle,
 				"fw",
-			},
-		}) || added
-	}
-
-	return added, nil
-}
-
-func appendUUIDAggregateGarbageCollectionSteps(builder *garbageCollectionStepBuilder, object ManagedObject, snapshot Snapshot) (bool, error) {
-	rootHandle, classID, preference, err := parseUUIDAggregateAttachmentManagedObjectID(object.ID)
-	if err != nil {
-		return false, err
-	}
-
-	added := false
-	for _, filter := range snapshot.UUIDAggregateAttachmentFilters(rootHandle, classID) {
-		if filter.Preference != preference {
-			continue
-		}
-		protocol := strings.TrimSpace(filter.Protocol)
-		if protocol == "" {
-			protocol = "ip"
-		}
-		added = builder.appendStep("delete-stale-aggregate-attachment", Command{
-			Path: defaultBinary,
-			Args: []string{
-				"filter", "del",
-				"dev", object.Device,
-				"parent", rootHandle,
-				"protocol", protocol,
-				"pref", fmt.Sprintf("%d", filter.Preference),
-				"u32",
 			},
 		}) || added
 	}
@@ -494,30 +467,17 @@ func sortStaleManagedObjects(objects []StaleManagedObject) {
 	})
 }
 
-func parseDirectAttachmentManagedObjectID(id string) (string, string, string, uint32, error) {
+func parseDirectAttachmentManagedObjectID(id string) (string, string, string, uint32, string, error) {
 	parts := strings.Split(strings.TrimSpace(id), "|")
-	if len(parts) != 4 {
-		return "", "", "", 0, fmt.Errorf("invalid direct attachment managed object id %q", id)
+	if len(parts) != 5 {
+		return "", "", "", 0, "", fmt.Errorf("invalid direct attachment managed object id %q", id)
 	}
 	preference, err := parseManagedPreference(parts[3], id)
 	if err != nil {
-		return "", "", "", 0, err
+		return "", "", "", 0, "", err
 	}
 
-	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.ToLower(strings.TrimSpace(parts[2])), preference, nil
-}
-
-func parseUUIDAggregateAttachmentManagedObjectID(id string) (string, string, uint32, error) {
-	parts := strings.Split(strings.TrimSpace(id), "|")
-	if len(parts) != 3 {
-		return "", "", 0, fmt.Errorf("invalid uuid aggregate attachment managed object id %q", id)
-	}
-	preference, err := parseManagedPreference(parts[2], id)
-	if err != nil {
-		return "", "", 0, err
-	}
-
-	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), preference, nil
+	return strings.TrimSpace(parts[0]), strings.ToLower(strings.TrimSpace(parts[1])), strings.ToLower(strings.TrimSpace(parts[2])), preference, strings.TrimSpace(parts[4]), nil
 }
 
 func parseMarkAttachmentTableManagedObjectID(id string) (string, string, error) {

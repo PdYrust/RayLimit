@@ -1,0 +1,53 @@
+# discover
+
+`discover` lists the Xray runtime targets that RayLimit can currently see through its discovery service.
+
+## Basic Usage
+
+```bash
+raylimit discover
+raylimit discover --format json
+```
+
+## What The Command Is For
+
+Discovery is the top of the operator workflow. It gives you:
+
+- runtime identity
+- host-process or container source data
+- provider errors when a discovery backend could not complete cleanly
+
+It answers one question only: “what runtimes can RayLimit see right now?”
+
+## What To Do With The Result
+
+Use `discover` to choose the selector you will pass to `inspect` or `limit`:
+
+```bash
+sudo raylimit discover
+sudo raylimit inspect --pid 1234
+sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+```
+
+## When To Use JSON
+
+Use JSON when you need:
+
+- another script to select a target
+- a saved runtime inventory snapshot
+- a machine-readable input to later validation or orchestration
+
+## Provider Errors And Partial Results
+
+Discovery can still return useful runtime data even when one provider reports an error. Read provider errors as a signal that one discovery path is incomplete, not as proof that every runtime is unusable.
+
+## What `discover` Does Not Do
+
+`discover` does not:
+
+- modify the host
+- derive limiter selectors
+- infer whether a limiter path is concrete
+- compare existing `tc` state
+
+Those steps belong to `inspect` and `limit`.
