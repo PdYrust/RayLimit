@@ -72,6 +72,9 @@ func TestDesiredStateFromEvaluationIPTarget(t *testing.T) {
 	if desired.Subject.Kind != policy.TargetKindIP || desired.Subject.Value != "203.0.113.10" {
 		t.Fatalf("unexpected ip subject, got %#v", desired.Subject)
 	}
+	if desired.Subject.IPAggregation != "" {
+		t.Fatalf("expected specific ip subject to keep aggregation empty, got %#v", desired.Subject)
+	}
 	if desired.Limits.Upload == nil || desired.Limits.Upload.BytesPerSecond != 2048 {
 		t.Fatalf("unexpected desired limits: %#v", desired.Limits)
 	}
@@ -105,6 +108,12 @@ func TestDesiredStateFromEvaluationIPAllBaseline(t *testing.T) {
 	}
 	if !desired.Subject.All || desired.Subject.Value != "" {
 		t.Fatalf("expected baseline ip subject, got %#v", desired.Subject)
+	}
+	if desired.Subject.NormalizedIPAggregation() != policy.IPAggregationModeShared {
+		t.Fatalf("expected baseline ip subject to default to shared aggregation, got %#v", desired.Subject)
+	}
+	if evaluation.Selection.Target.NormalizedIPAggregation() != policy.IPAggregationModeShared {
+		t.Fatalf("expected baseline evaluation target to default to shared aggregation, got %#v", evaluation.Selection.Target)
 	}
 	if desired.Limits.Upload == nil || desired.Limits.Upload.BytesPerSecond != 2048 {
 		t.Fatalf("unexpected baseline desired limits: %#v", desired.Limits)
@@ -269,6 +278,65 @@ func TestSubjectFromTargetBuildsIPBaselineSubject(t *testing.T) {
 
 	if !subject.All || subject.Value != "" {
 		t.Fatalf("expected baseline ip subject, got %#v", subject)
+	}
+	if subject.NormalizedIPAggregation() != policy.IPAggregationModeShared {
+		t.Fatalf("expected baseline ip subject to normalize to shared aggregation, got %#v", subject)
+	}
+}
+
+func TestSubjectFromTargetPreservesExplicitPerIPAggregation(t *testing.T) {
+	subject, err := SubjectFromTarget(policy.Target{
+		Kind:          policy.TargetKindIP,
+		All:           true,
+		IPAggregation: policy.IPAggregationModePerIP,
+	}, testSession())
+	if err != nil {
+		t.Fatalf("expected per-ip subject derivation to succeed, got %v", err)
+	}
+
+	if !subject.All || subject.Value != "" {
+		t.Fatalf("expected all-ip subject, got %#v", subject)
+	}
+	if subject.IPAggregation != policy.IPAggregationModePerIP {
+		t.Fatalf("expected per-ip aggregation to be preserved, got %#v", subject)
+	}
+}
+
+func TestAllIPSubjectsRemainDistinctAcrossAggregationModes(t *testing.T) {
+	shared := Subject{
+		Kind:          policy.TargetKindIP,
+		All:           true,
+		IPAggregation: policy.IPAggregationModeShared,
+		Binding: RuntimeBinding{
+			Runtime: testSession().Runtime,
+		},
+	}
+	perIP := Subject{
+		Kind:          policy.TargetKindIP,
+		All:           true,
+		IPAggregation: policy.IPAggregationModePerIP,
+		Binding: RuntimeBinding{
+			Runtime: testSession().Runtime,
+		},
+	}
+
+	if shared.Equal(perIP) {
+		t.Fatalf("expected all-ip subjects with different aggregation modes to remain distinct, got %#v and %#v", shared, perIP)
+	}
+}
+
+func TestSubjectValidateRejectsAggregationForSpecificIP(t *testing.T) {
+	subject := Subject{
+		Kind:          policy.TargetKindIP,
+		Value:         "203.0.113.10",
+		IPAggregation: policy.IPAggregationModeShared,
+		Binding: RuntimeBinding{
+			Runtime: testSession().Runtime,
+		},
+	}
+
+	if err := subject.Validate(); err == nil {
+		t.Fatalf("expected specific ip subject with aggregation to fail validation: %#v", subject)
 	}
 }
 

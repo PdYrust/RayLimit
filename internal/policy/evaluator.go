@@ -138,28 +138,29 @@ func matchAndSelect(policies []Policy, session discovery.Session) ([]Match, Sele
 	var selection Selection
 	var selectedRank selectionRank
 
-	for index, policy := range policies {
-		if err := policy.Validate(); err != nil {
+	for index, rule := range policies {
+		if err := rule.Validate(); err != nil {
 			return nil, Selection{}, nil, fmt.Errorf("invalid policy at index %d: %w", index, err)
 		}
-		if !policy.Target.MatchesSession(session) {
+		normalizedRule := rule.normalized()
+		if !normalizedRule.Target.MatchesSession(session) {
 			continue
 		}
 
 		match := Match{
 			Index:      index,
-			Policy:     policy,
-			Precedence: policy.Target.Kind.Precedence(),
+			Policy:     normalizedRule,
+			Precedence: normalizedRule.Target.Kind.Precedence(),
 		}
 		matches = append(matches, match)
 
-		rank := targetSelectionRank(policy.Target)
+		rank := targetSelectionRank(normalizedRule.Target)
 		switch rank.compare(selectedRank) {
 		case 1:
 			selection = Selection{
-				Kind:       policy.Target.Kind,
+				Kind:       normalizedRule.Target.Kind,
 				Precedence: rank.precedence,
-				Target:     policy.Target,
+				Target:     normalizedRule.Target,
 			}
 			selectedRank = rank
 			clear(winnerIndexes)
@@ -167,21 +168,21 @@ func matchAndSelect(policies []Policy, session discovery.Session) ([]Match, Sele
 			continue
 		}
 
-		switch policy.Effect.normalized() {
+		switch normalizedRule.Effect.normalized() {
 		case EffectExclude:
 			if !selection.Excluded() {
 				selection.Limits = nil
 				clear(winnerIndexes)
 			}
 
-			selection.Excludes = append(selection.Excludes, policy)
+			selection.Excludes = append(selection.Excludes, normalizedRule)
 			winnerIndexes[index] = struct{}{}
 		case EffectLimit:
 			if selection.Excluded() {
 				continue
 			}
 
-			selection.Limits = append(selection.Limits, policy)
+			selection.Limits = append(selection.Limits, normalizedRule)
 			winnerIndexes[index] = struct{}{}
 		}
 	}
@@ -222,8 +223,8 @@ func effectiveReason(e Evaluation) string {
 
 	reason := fmt.Sprintf("%s precedence selected the effective rule set", e.Selection.Kind)
 	if e.Selection.Kind == TargetKindIP && !e.Selection.Target.All {
-		if broaderIPBaselines(e.NonWinningPolicies()) != 0 {
-			reason += " over a matching ip all baseline"
+		if broaderSharedIPBaselines(e.NonWinningPolicies()) != 0 {
+			reason += " over a matching shared --ip all baseline"
 		}
 	}
 	if broader := broaderNonWinningKinds(e.Selection.Kind, e.NonWinningPolicies()); len(broader) != 0 {
@@ -295,10 +296,12 @@ func broaderNonWinningKinds(winningKind TargetKind, matches []Match) []string {
 	return kinds
 }
 
-func broaderIPBaselines(matches []Match) int {
+func broaderSharedIPBaselines(matches []Match) int {
 	count := 0
 	for _, match := range matches {
-		if match.Policy.Target.Kind == TargetKindIP && match.Policy.Target.All {
+		if match.Policy.Target.Kind == TargetKindIP &&
+			match.Policy.Target.All &&
+			match.Policy.Target.NormalizedIPAggregation() == IPAggregationModeShared {
 			count++
 		}
 	}

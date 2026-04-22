@@ -4,11 +4,11 @@ A speed limiter family defines the identity RayLimit uses to select traffic for 
 
 ## Current Family Comparison
 
-| Family | Selects traffic by | Best fit | Concrete execution truth |
-| --- | --- | --- | --- |
-| `ip` | visible client IP | runtime-local baseline, specific override, or specific exception | concrete |
-| `inbound` | inbound tag | one listener path needs its own cap | concrete when one concrete TCP listener can be derived conservatively |
-| `outbound` | outbound tag | one egress path needs its own cap | concrete when one unique non-zero socket mark can be derived conservatively |
+| Family     | Selects traffic by | Best fit                                                                                       | Concrete execution truth                                                               |
+| ---------- | ------------------ | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `ip`       | visible client IP  | shared all-IP baseline, evidence-expanded all-IP set, specific override, or specific exception | concrete; `per_ip` first needs live client-IP evidence to expand into concrete targets |
+| `inbound`  | inbound tag        | one listener path needs its own cap                                                            | concrete when one concrete TCP listener can be derived conservatively                  |
+| `outbound` | outbound tag       | one egress path needs its own cap                                                              | concrete when one unique non-zero socket mark can be derived conservatively            |
 
 ## Shared Operator Model
 
@@ -26,9 +26,10 @@ All three families share the same outer contract:
 
 IP is direct. It can express:
 
-- a runtime-local `all` baseline
-- a specific per-IP override
-- a specific per-IP unlimited exception
+- a runtime-local shared `all` baseline
+- a runtime-local evidence-expanded `all` set through `--ip-aggregation per_ip`
+- a specific IP override
+- a specific IP unlimited exception
 
 ### Inbound
 

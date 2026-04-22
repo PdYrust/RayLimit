@@ -37,6 +37,32 @@ func TestTargetKindValid(t *testing.T) {
 	}
 }
 
+func TestIPAggregationModeValid(t *testing.T) {
+	for _, mode := range []IPAggregationMode{
+		IPAggregationModeShared,
+		IPAggregationModePerIP,
+	} {
+		if !mode.Valid() {
+			t.Fatalf("expected ip aggregation mode %q to be valid", mode)
+		}
+	}
+
+	if invalid := IPAggregationMode("fanout"); invalid.Valid() {
+		t.Fatalf("expected ip aggregation mode %q to be rejected", invalid)
+	}
+}
+
+func TestTargetNormalizedIPAggregationDefaultsSharedForIPAll(t *testing.T) {
+	target := Target{
+		Kind: TargetKindIP,
+		All:  true,
+	}
+
+	if target.NormalizedIPAggregation() != IPAggregationModeShared {
+		t.Fatalf("expected ip all target to default to shared aggregation, got %#v", target)
+	}
+}
+
 func TestTargetKindPrecedence(t *testing.T) {
 	if TargetKindIP.Precedence() <= TargetKindInbound.Precedence() {
 		t.Fatal("expected ip precedence to be higher than inbound")
@@ -67,8 +93,9 @@ func TestPolicyValidateSupportedTargets(t *testing.T) {
 		{
 			Name: "ip-all-limit",
 			Target: Target{
-				Kind: TargetKindIP,
-				All:  true,
+				Kind:          TargetKindIP,
+				All:           true,
+				IPAggregation: IPAggregationModePerIP,
 			},
 			Limits: LimitPolicy{
 				Download: &RateLimit{BytesPerSecond: 1536},
@@ -127,6 +154,36 @@ func TestPolicyValidateRejectsIncompleteDefinitions(t *testing.T) {
 				Kind:  TargetKindIP,
 				All:   true,
 				Value: "203.0.113.10",
+			},
+			Limits: LimitPolicy{
+				Upload: &RateLimit{BytesPerSecond: 1024},
+			},
+		},
+		{
+			Target: Target{
+				Kind:          TargetKindIP,
+				Value:         "203.0.113.10",
+				IPAggregation: IPAggregationModeShared,
+			},
+			Limits: LimitPolicy{
+				Upload: &RateLimit{BytesPerSecond: 1024},
+			},
+		},
+		{
+			Target: Target{
+				Kind:          TargetKindInbound,
+				Value:         "api-in",
+				IPAggregation: IPAggregationModeShared,
+			},
+			Limits: LimitPolicy{
+				Download: &RateLimit{BytesPerSecond: 1024},
+			},
+		},
+		{
+			Target: Target{
+				Kind:          TargetKindIP,
+				All:           true,
+				IPAggregation: IPAggregationMode("fanout"),
 			},
 			Limits: LimitPolicy{
 				Upload: &RateLimit{BytesPerSecond: 1024},
@@ -282,6 +339,34 @@ func TestResolveSpecificIPBeatsMatchingIPBaseline(t *testing.T) {
 	}
 	if len(selection.Limits) != 1 || selection.Limits[0].Name != "ip-override" {
 		t.Fatalf("unexpected winning ip override selection: %#v", selection)
+	}
+}
+
+func TestResolveNormalizesDefaultIPAllSelectionToSharedAggregation(t *testing.T) {
+	selection, err := Resolve([]Policy{
+		{
+			Name: "ip-all-limit",
+			Target: Target{
+				Kind: TargetKindIP,
+				All:  true,
+			},
+			Limits: LimitPolicy{
+				Upload: &RateLimit{BytesPerSecond: 4096},
+			},
+		},
+	}, testSession())
+	if err != nil {
+		t.Fatalf("expected policies to resolve, got %v", err)
+	}
+
+	if !selection.Target.All {
+		t.Fatalf("expected ip all selection, got %#v", selection)
+	}
+	if selection.Target.NormalizedIPAggregation() != IPAggregationModeShared {
+		t.Fatalf("expected ip all selection to normalize to shared aggregation, got %#v", selection)
+	}
+	if len(selection.Limits) != 1 || selection.Limits[0].Target.NormalizedIPAggregation() != IPAggregationModeShared {
+		t.Fatalf("expected winning ip all policy to normalize to shared aggregation, got %#v", selection)
 	}
 }
 

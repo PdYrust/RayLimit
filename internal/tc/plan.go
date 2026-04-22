@@ -165,8 +165,21 @@ func (p Plan) Validate() error {
 			return errors.New("plan mark attachment filter does not match the plan root handle")
 		}
 		if p.Binding.Identity != nil {
-			if p.MarkAttachment.Identity.Kind != p.Binding.Identity.Kind || strings.TrimSpace(p.MarkAttachment.Identity.Value) != strings.TrimSpace(p.Binding.Identity.Value) {
+			if p.MarkAttachment.Identity.Kind != p.Binding.Identity.Kind ||
+				strings.TrimSpace(p.MarkAttachment.Identity.Value) != strings.TrimSpace(p.Binding.Identity.Value) ||
+				p.MarkAttachment.Identity.NormalizedIPAggregation() != p.Binding.Identity.NormalizedIPAggregation() {
 				return errors.New("plan mark attachment identity does not match the plan binding identity")
+			}
+		}
+	}
+	if isAllIPPerIPSubject(p.Action.Subject) {
+		if p.AttachmentExecution.Readiness == BindingReadinessReady {
+			return errors.New("all-IP per_ip plans cannot report ready direct attachment execution")
+		}
+		switch p.Action.Kind {
+		case limiter.ActionApply, limiter.ActionRemove, limiter.ActionReconcile:
+			if len(p.Steps) != 0 {
+				return errors.New("all-IP per_ip plans cannot emit concrete tc steps before per_ip planning is implemented")
 			}
 		}
 	}
@@ -250,6 +263,10 @@ func (p Planner) Plan(action limiter.Action, scope Scope) (Plan, error) {
 }
 
 func (p Planner) applySteps(plan Plan, desired limiter.DesiredState) ([]Step, error) {
+	if isAllIPPerIPSubject(plan.Action.Subject) {
+		return nil, nil
+	}
+
 	steps := []Step{
 		p.step("ensure-root-qdisc", "qdisc", "replace", "dev", plan.Scope.Device, "root", "handle", plan.Handles.RootHandle, "htb"),
 	}
@@ -270,6 +287,10 @@ func (p Planner) applySteps(plan Plan, desired limiter.DesiredState) ([]Step, er
 }
 
 func (p Planner) removeSteps(plan Plan) ([]Step, error) {
+	if isAllIPPerIPSubject(plan.Action.Subject) {
+		return nil, nil
+	}
+
 	tcStates, err := tcAppliedStates(plan.Action.Applied)
 	if err != nil {
 		return nil, err
@@ -302,6 +323,10 @@ func (p Planner) inspectSteps(plan Plan) []Step {
 }
 
 func (p Planner) reconcileSteps(plan Plan, desired limiter.DesiredState, applied []limiter.AppliedState) ([]Step, bool, error) {
+	if isAllIPPerIPSubject(plan.Action.Subject) {
+		return nil, false, nil
+	}
+
 	tcStates, err := tcAppliedStates(applied)
 	if err != nil {
 		return nil, false, err
@@ -538,24 +563,30 @@ func deriveDeterministicClassID(key string, rootHandle string) string {
 
 func subjectKey(subject limiter.Subject, direction Direction) string {
 	value := strings.TrimSpace(subject.Value)
-	if subject.Kind == policy.TargetKindIP && subject.All {
-		value = "all"
-	} else if subject.Kind == policy.TargetKindIP {
-		if normalized, err := ipaddr.Normalize(value); err == nil {
-			value = normalized
-		}
-	}
-
 	parts := []string{
 		string(direction),
 		string(subject.Kind),
-		strings.ToLower(value),
+	}
+	if subject.Kind == policy.TargetKindIP && subject.All {
+		parts = append(parts, "all")
+		if isAllIPPerIPSubject(subject) {
+			parts = append(parts, string(policy.IPAggregationModePerIP))
+		}
+	} else {
+		if subject.Kind == policy.TargetKindIP {
+			if normalized, err := ipaddr.Normalize(value); err == nil {
+				value = normalized
+			}
+		}
+		parts = append(parts, strings.ToLower(value))
+	}
+	parts = append(parts,
 		string(subject.Binding.Runtime.Source),
 		strings.TrimSpace(subject.Binding.Runtime.Provider),
 		strings.TrimSpace(subject.Binding.Runtime.Name),
 		fmt.Sprintf("%d", subject.Binding.Runtime.HostPID),
 		strings.TrimSpace(subject.Binding.Runtime.ContainerID),
-	}
+	)
 
 	return strings.Join(parts, "|")
 }

@@ -23,10 +23,10 @@ You can still run `discover`, `inspect`, and most dry-run planning without a ful
 
 ## The Two Supported Operator Paths
 
-| Path | Use when | Typical command prefix |
-| --- | --- | --- |
-| release install | you want a normal host deployment | `raylimit ...` |
-| local checkout | you are evaluating, validating, or developing locally | `go run ./cmd/raylimit ...` or `./bin/raylimit ...` |
+| Path            | Use when                                              | Typical command prefix                              |
+| --------------- | ----------------------------------------------------- | --------------------------------------------------- |
+| release install | you want a normal host deployment                     | `raylimit ...`                                      |
+| local checkout  | you are evaluating, validating, or developing locally | `go run ./cmd/raylimit ...` or `./bin/raylimit ...` |
 
 Choose the release path when you want a conventional installed binary in `PATH`. Choose the local path when you want the fastest test loop and you are comfortable running from a checkout.
 
@@ -48,7 +48,7 @@ That sequence confirms:
 - the required host traffic-control tool exists
 - runtime discovery works
 - inspection works for one runtime
-- dry-run limit planning works without mutation
+- dry-run shared all-IP limit planning works without mutation
 
 ## What Not To Skip
 

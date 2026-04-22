@@ -6,6 +6,7 @@ RayLimit is reconcile-aware. It does not blindly reapply a rule every time you r
 
 Before deciding what to do, RayLimit attempts to inspect:
 
+- any runtime-derived evidence the selected limiter family requires
 - the relevant `tc` state
 - the relevant `nftables` state when the family needs it
 - the expected class and attachment shape for the selected subject
@@ -16,12 +17,12 @@ The quality of that observation matters because it changes whether the command c
 
 The reconcile decision is explicit:
 
-| Decision | Operator meaning |
-| --- | --- |
-| `apply` | the selected subject has a desired state but no matching applied state |
-| `no_op` | the applied state already matches the desired state |
+| Decision  | Operator meaning                                                            |
+| --------- | --------------------------------------------------------------------------- |
+| `apply`   | the selected subject has a desired state but no matching applied state      |
+| `no_op`   | the applied state already matches the desired state                         |
 | `replace` | applied state exists for the subject, but it differs from the desired state |
-| `remove` | applied state exists without a desired state |
+| `remove`  | applied state exists without a desired state                                |
 
 In operator language, `replace` is the reapply path. RayLimit uses that path when it sees the subject already has managed state, but that state is wrong, incomplete, or not comparable enough to preserve as-is.
 
@@ -40,7 +41,8 @@ That means a dry-run can already tell you:
 
 For the IP family:
 
-- a matching baseline class and matching baseline attachment can become `no_op`
+- a matching shared baseline class and matching shared baseline attachment can become `no_op`
+- a `--ip all --ip-aggregation per_ip` request can make the same reconcile decisions per expanded concrete client IP when live evidence is available
 - a matching specific unlimited pass rule can become `no_op`
 - a matching class with a missing expected direct attachment can move into a `replace` path
 - remove for a specific IP clears the explicit specific rule forms for that subject
@@ -67,7 +69,7 @@ Cleanup remains conservative:
 - root qdisc cleanup happens only when it still belongs to the remaining managed state model
 - RayLimit avoids claiming unrelated host state
 
-For IP in particular, this is what keeps specific-IP cleanup from accidentally collapsing the runtime-local baseline.
+For IP in particular, this is what keeps specific-IP cleanup from accidentally collapsing the runtime-local shared baseline.
 
 ## Why This Matters
 

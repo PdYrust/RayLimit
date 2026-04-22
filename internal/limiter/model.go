@@ -45,10 +45,25 @@ func (b RuntimeBinding) ValidateFor(kind policy.TargetKind) error {
 
 // Subject identifies the runtime-scoped object a limiter action refers to.
 type Subject struct {
-	Kind    policy.TargetKind `json:"kind"`
-	All     bool              `json:"all,omitempty"`
-	Value   string            `json:"value,omitempty"`
-	Binding RuntimeBinding    `json:"binding"`
+	Kind          policy.TargetKind        `json:"kind"`
+	All           bool                     `json:"all,omitempty"`
+	Value         string                   `json:"value,omitempty"`
+	IPAggregation policy.IPAggregationMode `json:"ip_aggregation,omitempty"`
+	Binding       RuntimeBinding           `json:"binding"`
+}
+
+// NormalizedIPAggregation reports the effective aggregation mode for an all-IP
+// subject. An unspecified all-IP subject defaults to shared.
+func (s Subject) NormalizedIPAggregation() policy.IPAggregationMode {
+	if s.Kind != policy.TargetKindIP || !s.All {
+		return ""
+	}
+
+	if strings.TrimSpace(string(s.IPAggregation)) == "" {
+		return policy.IPAggregationModeShared
+	}
+
+	return s.IPAggregation
 }
 
 // Validate checks that an enforcement subject is internally consistent.
@@ -62,20 +77,29 @@ func (s Subject) Validate() error {
 	}
 
 	value := strings.TrimSpace(s.Value)
+	aggregation := strings.TrimSpace(string(s.IPAggregation))
 	switch s.Kind {
 	case policy.TargetKindInbound, policy.TargetKindOutbound:
 		if s.All {
 			return fmt.Errorf("%s subject cannot use all", s.Kind)
 		}
+		if aggregation != "" {
+			return fmt.Errorf("%s subject cannot use ip_aggregation", s.Kind)
+		}
 		if value == "" {
 			return fmt.Errorf("%s subject requires a value", s.Kind)
 		}
 	case policy.TargetKindIP:
+		if aggregation != "" && !s.IPAggregation.Valid() {
+			return fmt.Errorf("invalid ip aggregation mode %q", s.IPAggregation)
+		}
 		switch {
 		case s.All && value != "":
 			return errors.New("ip subject cannot combine all with a specific value")
 		case !s.All && value == "":
 			return errors.New("ip subject requires a value")
+		case !s.All && aggregation != "":
+			return errors.New("specific ip subject cannot use ip_aggregation")
 		case s.All:
 			return nil
 		}
@@ -93,6 +117,9 @@ func (s Subject) Equal(other Subject) bool {
 		return false
 	}
 	if s.All != other.All {
+		return false
+	}
+	if s.Kind == policy.TargetKindIP && s.All && s.NormalizedIPAggregation() != other.NormalizedIPAggregation() {
 		return false
 	}
 	if !sameBinding(s.Binding, other.Binding) {
@@ -131,6 +158,7 @@ func SubjectFromTarget(target policy.Target, session discovery.Session) (Subject
 	switch target.Kind {
 	case policy.TargetKindIP:
 		if target.All {
+			subject.IPAggregation = target.NormalizedIPAggregation()
 			break
 		}
 		normalized, err := ipaddr.Normalize(session.Client.IP)
@@ -212,6 +240,9 @@ func (s DesiredState) Validate() error {
 	}
 	if s.PolicyEvaluation.Selection.Target.All != s.Subject.All {
 		return errors.New("desired state subject scope does not match policy evaluation")
+	}
+	if s.Subject.Kind == policy.TargetKindIP && s.Subject.All && s.PolicyEvaluation.Selection.Target.NormalizedIPAggregation() != s.Subject.NormalizedIPAggregation() {
+		return errors.New("desired state subject aggregation does not match policy evaluation")
 	}
 	if s.Subject.Kind == policy.TargetKindIP && !s.Subject.All && !ipaddr.Equal(s.PolicyEvaluation.Selection.Target.Value, s.Subject.Value) {
 		return errors.New("desired state subject value does not match policy evaluation")

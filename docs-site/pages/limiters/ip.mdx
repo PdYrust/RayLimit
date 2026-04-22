@@ -1,6 +1,6 @@
 # IP
 
-The IP limiter is the most direct packet-facing limiter in RayLimit. It is also the richest family in the current product because it supports a runtime-local baseline plus specific overrides and specific unlimited exceptions.
+The IP limiter is the most direct packet-facing limiter in RayLimit. It supports a runtime-local shared all-IP baseline, an evidence-expanded all-IP `per_ip` mode, specific IP overrides, and specific IP unlimited exceptions.
 
 ## When To Use IP
 
@@ -12,15 +12,16 @@ Choose the IP limiter when visible client IP is the identity you actually want t
 
 Prefer `inbound` or `outbound` when the listener path or egress route is more meaningful than the client IP itself.
 
-## The Three Supported IP Behaviors
+## All-IP Modes And Specific Targets
 
-RayLimit supports three explicit runtime-local IP behaviors:
+RayLimit supports four explicit runtime-local IP shapes:
 
-- `--ip all --rate ...` for one baseline that applies to all visible client IPs on the selected runtime
-- `--ip <ip> --rate ...` for one specific per-IP override
-- `--ip <ip> --unlimited` for one specific no-limit exception
+- `--ip all` or `--ip all --ip-aggregation shared` for one shared all-IP baseline
+- `--ip all --ip-aggregation per_ip` for one evidence-expanded all-IP selection that becomes concrete specific-IP work
+- `--ip <ip> --rate ...` for one specific IP override
+- `--ip <ip> --unlimited` for one specific IP no-limit exception
 
-`all` is a runtime-local baseline, not a synthetic single-IP subject and not a host-global default.
+`shared` is the default aggregation for `--ip all`. `--ip-aggregation` is valid only with `--ip all`.
 
 ## What `all` Means
 
@@ -29,6 +30,7 @@ RayLimit supports three explicit runtime-local IP behaviors:
 - all visible client IPs for the selected runtime
 - on the selected device
 - for the selected direction
+- through one explicit aggregation mode
 
 It does not mean:
 
@@ -44,15 +46,68 @@ sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction download --rate 4096
 ```
 
+The aggregation mode determines how that all-IP scope is realized:
+
+- `shared` keeps one runtime-local shared baseline
+- `per_ip` expands the current live client IP set into concrete specific-IP work
+
+## Choosing Between `shared` And `per_ip`
+
+Choose `shared` when you want one runtime-local all-IP baseline that does not depend on the current live client IP set.
+
+Choose `per_ip` when you want RayLimit to expand the current live client IP set into concrete specific-IP work for apply, reconcile, and remove.
+
+## Shared All-IP Baseline
+
+`--ip all` defaults to `shared`.
+
+In shared mode:
+
+- RayLimit plans one runtime-local all-IP baseline
+- the concrete backend path is one direct `matchall` attachment
+- apply, no-op, replace, and remove work as one shared all-IP subject
+- the selected runtime keeps one explicit baseline per device and direction
+
+This is the original all-IP model and it remains the default.
+
+## Evidence-Expanded `per_ip`
+
+`--ip all --ip-aggregation per_ip` keeps the same runtime-local all-IP selection, but it does not install one shared baseline. Instead, RayLimit:
+
+- reads the current live client IP set from Xray-backed session evidence
+- normalizes, deduplicates, and deterministically sorts the usable client IPs
+- expands that set into concrete specific-IP subjects
+- reuses the specific-IP planning, execution, and reconcile path for each expanded target
+
+This is still runtime-local. It does not use an external IP discovery service and it does not guess unseen client IPs.
+
+### Evidence States That Matter
+
+For `per_ip`, the current evidence state is part of the operator contract:
+
+- available evidence with usable client IPs produces concrete per-target work
+- `no_sessions` means no current live client IPs were visible for that runtime, so there is no concrete per-IP work to apply or remove
+- unavailable or insufficient evidence blocks planning and refuses live execution
+- available evidence that yields no usable client IPs after normalization also blocks concrete per-IP work
+
+### Current `per_ip` Scope
+
+`per_ip` is implemented for the all-IP rate-limited and remove paths:
+
+- apply and reconcile expand into one concrete decision per client IP
+- no-op, apply, replace, and remove are reported per expanded target
+- remove stays limited to the client IPs currently proven by live evidence
+- shared root-qdisc cleanup remains conservative and runs only when the current visible client IP set proves that cleanup is safe
+
 ## How Specific Override Works
 
 A specific `--ip <ip> --rate ...` rule creates a concrete subject for that address on the selected runtime.
 
-When both the baseline and a specific IP limit match:
+When both the shared all-IP baseline and a specific IP limit match:
 
 - the specific IP rule wins over `all`
 - the specific rate becomes the effective state for that address
-- the baseline still applies to every other IP on that runtime and direction
+- the shared baseline still applies to every other IP on that runtime and direction
 
 This is not a hack built on “tightest merge” semantics. The baseline and the specific rule are separate, explicit states with explicit precedence.
 
@@ -60,11 +115,11 @@ This is not a hack built on “tightest merge” semantics. The baseline and the
 
 A specific `--ip <ip> --unlimited` rule creates a no-limit exception for that address.
 
-When the unlimited exception and the baseline both match:
+When the unlimited exception and the shared all-IP baseline both match:
 
 - the specific IP exception wins
-- the selected IP bypasses the baseline for that direction
-- the baseline still applies to every other IP on that runtime and direction
+- the selected IP bypasses the shared baseline for that direction
+- the shared baseline still applies to every other IP on that runtime and direction
 
 `--unlimited` is valid only with a specific IP target. It cannot be combined with:
 
@@ -76,8 +131,9 @@ When the unlimited exception and the baseline both match:
 
 The IP model is always runtime-local:
 
-- one runtime plus `--ip all` equals one baseline
-- the same `--ip all` on another runtime is a different baseline
+- one runtime plus `--ip all --ip-aggregation shared` equals one shared baseline
+- one runtime plus `--ip all --ip-aggregation per_ip` equals one evidence-expanded concrete client-IP set derived from the current live runtime view
+- the same `--ip all` selection on another runtime is a different all-IP subject
 - one specific IP on one runtime is not the same subject as the same IP on another runtime
 
 This matters for both apply and cleanup. RayLimit does not treat the IP model as host-global state.
@@ -96,7 +152,8 @@ Canonical-equivalent inputs map to the same specific IP identity after normaliza
 
 IP is concrete because RayLimit can build direct `tc` attachment rules:
 
-- the baseline uses a runtime-local `matchall` attachment
+- the shared all-IP baseline uses a runtime-local `matchall` attachment
+- the `per_ip` all-IP mode expands into concrete specific-IP classify or pass work for each current client IP
 - a specific rate override uses a direct client-IP classify rule
 - a specific unlimited exception uses a direct client-IP pass rule
 
@@ -106,16 +163,16 @@ This is the clearest concrete execution path in the current product.
 
 The IP family participates fully in RayLimit’s reconcile model:
 
-- a missing baseline or specific rule can produce `apply`
-- a matching baseline or specific rule can produce `no_op`
+- a missing shared baseline, expanded per-IP target, or specific rule can produce `apply`
+- a matching shared baseline, expanded per-IP target, or specific rule can produce `no_op`
 - a mismatched class or missing expected attachment can produce `replace`
 - explicit managed state without a desired state can produce `remove`
 
-In practical terms, `replace` is the reapply path. It means the selected subject already has managed state, but that state is not correct enough to keep.
+In practical terms, `replace` is the reapply path. It means the selected subject already has managed state, but that state is not correct enough to keep. For `per_ip`, that decision is made and reported per expanded concrete client IP.
 
 ## Remove Semantics In The IP Model
 
-Removing a specific IP rule removes only that explicit override or unlimited exception. It does not remove the baseline unless you remove `--ip all` itself.
+Removing a specific IP rule removes only that explicit override or unlimited exception. It does not remove the shared all-IP baseline unless you remove `--ip all` itself.
 
 Examples:
 
@@ -125,20 +182,30 @@ Remove one specific override or specific unlimited rule:
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
 ```
 
-Remove the runtime-local baseline:
+Remove the runtime-local shared baseline:
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
 ```
 
-Specific-IP remove is intentionally conservative. It targets the explicit specific-IP rule forms for that subject rather than collapsing the entire runtime-local baseline.
+Remove the runtime-local `per_ip` expansion set:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove
+```
+
+Specific-IP remove is intentionally conservative. It targets the explicit specific-IP rule forms for that subject rather than collapsing the entire runtime-local shared baseline.
+
+`per_ip` remove is also conservative. It removes only the concrete client-IP state currently proven by live evidence and only performs shared root-qdisc cleanup when the current visible client IP set proves that cleanup is safe.
 
 ## Precedence Inside IP And Against Other Families
 
 Inside IP:
 
-- a specific IP rule overrides the `all` baseline
-- a specific unlimited rule overrides the baseline as an exception
+- a specific IP rule overrides the shared `all` baseline
+- a specific unlimited rule overrides the shared baseline as an exception
+
+`per_ip` is not a second precedence layer. It is an all-IP selection mode that expands into concrete specific-IP work from the current live evidence set.
 
 Across families:
 
@@ -148,10 +215,16 @@ That means IP is the highest-precedence family when the same live session could 
 
 ## Practical Commands
 
-Preview a baseline:
+Preview a shared all-IP baseline:
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+```
+
+Preview a `per_ip` all-IP expansion:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096
 ```
 
 Preview a specific override:
@@ -172,10 +245,10 @@ Preview an IPv6-specific override:
 sudo raylimit limit --pid 1234 --ip 2001:db8::10 --device eth0 --direction download --rate 4096
 ```
 
-Preview in JSON:
+Preview `per_ip` in JSON:
 
 ```bash
-sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096 --format json
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096 --format json
 ```
 
 Execute a specific override:
@@ -190,10 +263,16 @@ Remove the specific rule only:
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
 ```
 
-Remove the baseline:
+Remove the shared baseline:
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove --execute
+```
+
+Remove the `per_ip` expansion set:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove --execute
 ```
 
 ## When Not To Use IP
@@ -204,4 +283,4 @@ Avoid IP as the primary control surface when:
 - the real boundary is the outbound route rather than the client address
 - you cannot reason confidently about what the runtime sees as the visible client IP
 
-When those conditions matter more than direct client identity, use `inbound` or `outbound` instead.
+When those conditions matter more than direct client identity, use `inbound` or `outbound` instead. When you want an all-IP shape that does not depend on current live session evidence, stay with the default shared mode instead of `per_ip`.

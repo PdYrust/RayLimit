@@ -16,11 +16,11 @@ RayLimit helps you:
 
 The current product scope is intentionally narrow:
 
-| Family | Subject model | Current concrete truth |
-| --- | --- | --- |
-| `ip` | runtime-local `all` baseline, specific IP override, specific IP unlimited exception | concrete through direct `tc` attachment |
-| `inbound` | one runtime-local inbound tag | concrete when readable configuration proves one concrete TCP listener conservatively |
-| `outbound` | one runtime-local outbound tag | concrete when readable configuration proves one unique non-zero outbound socket mark without proxy indirection |
+| Family     | Subject model                                                                                                                     | Current concrete truth                                                                                                                           |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ip`       | runtime-local shared `all` baseline, evidence-expanded `per_ip` all-IP set, specific IP override, specific IP unlimited exception | shared and specific IP are concrete through direct `tc` attachment; `per_ip` first needs live client IP evidence to expand into concrete targets |
+| `inbound`  | one runtime-local inbound tag                                                                                                     | concrete when readable configuration proves one concrete TCP listener conservatively                                                             |
+| `outbound` | one runtime-local outbound tag                                                                                                    | concrete when readable configuration proves one unique non-zero outbound socket mark without proxy indirection                                   |
 
 Everything remains runtime-local. The same tag or IP value on another runtime is a separate subject with separate managed state.
 
@@ -52,9 +52,9 @@ That is enough to see:
 
 - runtime discovery
 - inspection of one selected target
-- a runtime-local IP baseline
+- a runtime-local shared all-IP baseline
 - a specific IP override
-- a specific IP unlimited exception that bypasses the baseline
+- a specific IP unlimited exception that bypasses the shared baseline
 
 ## Read The Docs In This Order
 

@@ -42,6 +42,10 @@ type outboundMarkSelectorDeriver interface {
 	Derive(ctx context.Context, target discovery.RuntimeTarget, outboundTag string) (discovery.OutboundMarkSelectorResult, error)
 }
 
+type sessionEvidenceProvider interface {
+	ObserveSessions(ctx context.Context, runtime discovery.SessionRuntime) (discovery.SessionEvidenceResult, error)
+}
+
 type App struct {
 	discovery        discoveryService
 	limiterPlanner   tcPlanner
@@ -50,6 +54,7 @@ type App struct {
 	tcRunner         tc.Runner
 	inboundSelector  inboundMarkSelectorDeriver
 	outboundSelector outboundMarkSelectorDeriver
+	sessionEvidence  sessionEvidenceProvider
 	privilegeStatus  func() privilege.Status
 	logging          loggingModel
 }

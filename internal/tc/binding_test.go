@@ -76,6 +76,63 @@ func TestBindSubjectIPCanonicalizesMappedIPv4Identity(t *testing.T) {
 	}
 }
 
+func TestBindSubjectIPAllSharedAggregationIsReady(t *testing.T) {
+	subject := limiter.Subject{
+		Kind: policy.TargetKindIP,
+		All:  true,
+		Binding: limiter.RuntimeBinding{
+			Runtime: bindingTestSession().Runtime,
+		},
+	}
+
+	binding, err := BindSubject(subject)
+	if err != nil {
+		t.Fatalf("expected shared all-ip binding to succeed, got %v", err)
+	}
+
+	if binding.Readiness != BindingReadinessReady {
+		t.Fatalf("expected shared all-ip binding readiness to remain ready, got %#v", binding)
+	}
+	if binding.Identity == nil || binding.Identity.Kind != IdentityKindAllClientIP {
+		t.Fatalf("expected shared all-ip binding to expose all-client-ip identity, got %#v", binding.Identity)
+	}
+	if binding.Identity.NormalizedIPAggregation() != policy.IPAggregationModeShared {
+		t.Fatalf("expected shared all-ip binding to normalize aggregation to shared, got %#v", binding.Identity)
+	}
+}
+
+func TestBindSubjectIPAllPerIPAggregationIsPartial(t *testing.T) {
+	subject := limiter.Subject{
+		Kind:          policy.TargetKindIP,
+		All:           true,
+		IPAggregation: policy.IPAggregationModePerIP,
+		Binding: limiter.RuntimeBinding{
+			Runtime: bindingTestSession().Runtime,
+		},
+	}
+
+	binding, err := BindSubject(subject)
+	if err != nil {
+		t.Fatalf("expected per_ip all-ip binding to succeed, got %v", err)
+	}
+
+	if binding.Readiness != BindingReadinessPartial {
+		t.Fatalf("expected per_ip all-ip binding to remain partial until concrete fanout exists, got %#v", binding)
+	}
+	if binding.Confidence != BindingConfidenceHigh {
+		t.Fatalf("expected per_ip all-ip binding confidence to remain high, got %#v", binding)
+	}
+	if binding.Identity == nil || binding.Identity.Kind != IdentityKindAllClientIP {
+		t.Fatalf("expected per_ip all-ip binding to expose all-client-ip identity, got %#v", binding.Identity)
+	}
+	if binding.Identity.NormalizedIPAggregation() != policy.IPAggregationModePerIP {
+		t.Fatalf("expected per_ip all-ip binding to preserve per_ip aggregation, got %#v", binding.Identity)
+	}
+	if !strings.Contains(binding.Reason, "per-client class fanout") || !strings.Contains(binding.Reason, "shared all-client-ip baseline path") {
+		t.Fatalf("expected per_ip all-ip binding reason to explain the planning gap, got %q", binding.Reason)
+	}
+}
+
 func TestBindSubjectInboundAndOutbound(t *testing.T) {
 	tests := []struct {
 		name  string

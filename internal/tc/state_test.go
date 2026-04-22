@@ -306,6 +306,62 @@ func TestSnapshotEligibleForRootQDiscCleanupReturnsFalseWhenAdditionalStateRemai
 	}
 }
 
+func TestSnapshotEligibleForRootQDiscCleanupAfterManagedObjectRemovalReturnsTrueWhenSelectedObjectsCoverObservedState(t *testing.T) {
+	snapshot := Snapshot{
+		Device: "lo",
+		QDiscs: []QDiscState{{
+			Kind:   "htb",
+			Handle: "1:",
+			Parent: "root",
+		}},
+		Classes: []ClassState{
+			{Kind: "htb", ClassID: "1:2a", Parent: "1:"},
+			{Kind: "htb", ClassID: "1:2b", Parent: "1:"},
+		},
+		Filters: []FilterState{
+			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 120, FlowID: "1:2a"},
+			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 140, FlowID: "1:2b"},
+		},
+	}
+
+	if !snapshot.EligibleForRootQDiscCleanupAfterManagedObjectRemoval("1:", []ManagedObject{
+		{Kind: ManagedObjectRootQDisc, Device: "lo", RootHandle: "1:", ID: "1:"},
+		{Kind: ManagedObjectClass, Device: "lo", RootHandle: "1:", ID: "1:2a"},
+		{Kind: ManagedObjectClass, Device: "lo", RootHandle: "1:", ID: "1:2b"},
+		{Kind: ManagedObjectDirectAttachmentFilter, Device: "lo", RootHandle: "1:", ID: directAttachmentManagedObjectID("1:", "u32", "ip", 120, "1:2a")},
+		{Kind: ManagedObjectDirectAttachmentFilter, Device: "lo", RootHandle: "1:", ID: directAttachmentManagedObjectID("1:", "u32", "ip", 140, "1:2b")},
+	}) {
+		t.Fatalf("expected selected managed objects to make root qdisc cleanup eligible, got %#v", snapshot)
+	}
+}
+
+func TestSnapshotEligibleForRootQDiscCleanupAfterManagedObjectRemovalReturnsFalseWhenObservedStateRemains(t *testing.T) {
+	snapshot := Snapshot{
+		Device: "lo",
+		QDiscs: []QDiscState{{
+			Kind:   "htb",
+			Handle: "1:",
+			Parent: "root",
+		}},
+		Classes: []ClassState{
+			{Kind: "htb", ClassID: "1:2a", Parent: "1:"},
+			{Kind: "htb", ClassID: "1:2b", Parent: "1:"},
+		},
+		Filters: []FilterState{
+			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 120, FlowID: "1:2a"},
+			{Kind: "u32", Parent: "1:", Protocol: "ip", Preference: 140, FlowID: "1:2b"},
+		},
+	}
+
+	if snapshot.EligibleForRootQDiscCleanupAfterManagedObjectRemoval("1:", []ManagedObject{
+		{Kind: ManagedObjectRootQDisc, Device: "lo", RootHandle: "1:", ID: "1:"},
+		{Kind: ManagedObjectClass, Device: "lo", RootHandle: "1:", ID: "1:2a"},
+		{Kind: ManagedObjectDirectAttachmentFilter, Device: "lo", RootHandle: "1:", ID: directAttachmentManagedObjectID("1:", "u32", "ip", 120, "1:2a")},
+	}) {
+		t.Fatalf("expected remaining observed managed state to block root qdisc cleanup, got %#v", snapshot)
+	}
+}
+
 func TestSnapshotDirectAttachmentFiltersReturnsMatchingManagedFilters(t *testing.T) {
 	execution := DirectAttachmentExecution{
 		Readiness:  BindingReadinessReady,

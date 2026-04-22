@@ -41,10 +41,11 @@ sudo raylimit inspect --pid 1234
 sudo raylimit inspect --pid 1234 --format json
 ```
 
-### 4. Dry-Run The IP Baseline And Specific Variants
+### 4. Dry-Run The Shared Baseline, `per_ip`, And Specific Variants
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
 sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
 ```
@@ -53,7 +54,8 @@ At this point you are checking:
 
 - subject selection
 - address handling
-- baseline versus specific behavior
+- shared baseline versus specific behavior
+- `per_ip` evidence state and concrete expansion behavior
 - observation quality
 - decision clarity
 
@@ -89,10 +91,11 @@ Validate remove separately from apply:
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
 ```
 
-Test specific-IP remove and baseline remove independently. They do not represent the same cleanup scope.
+Test specific-IP remove, `per_ip` remove, and shared-baseline remove independently. They do not represent the same cleanup scope.
 
 ## Good Validation Signals
 

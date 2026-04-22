@@ -225,6 +225,42 @@ func TestBuildDirectAttachmentExecutionForIPBaselineAll(t *testing.T) {
 	if execution.Rules[0].Classifier != DirectAttachmentClassifierMatchAll || execution.Rules[0].Identity.Kind != IdentityKindAllClientIP {
 		t.Fatalf("expected matchall baseline rule, got %#v", execution.Rules[0])
 	}
+	if execution.Rules[0].Identity.NormalizedIPAggregation() != policy.IPAggregationModeShared {
+		t.Fatalf("expected baseline direct attachment rule to keep shared aggregation, got %#v", execution.Rules[0])
+	}
+}
+
+func TestBuildDirectAttachmentExecutionForIPAllPerIPRemainsUnavailable(t *testing.T) {
+	subject := limiter.Subject{
+		Kind:          policy.TargetKindIP,
+		All:           true,
+		IPAggregation: policy.IPAggregationModePerIP,
+		Binding: limiter.RuntimeBinding{
+			Runtime: bindingTestSession().Runtime,
+		},
+	}
+	binding, err := BindSubject(subject)
+	if err != nil {
+		t.Fatalf("expected per_ip all-ip binding to succeed, got %v", err)
+	}
+
+	execution, err := BuildDirectAttachmentExecution(binding, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	}, limiter.DesiredModeLimit, "1:2a")
+	if err != nil {
+		t.Fatalf("expected per_ip direct attachment execution construction to succeed, got %v", err)
+	}
+
+	if execution.Readiness != BindingReadinessUnavailable {
+		t.Fatalf("expected per_ip all-ip direct attachment execution to remain unavailable, got %#v", execution)
+	}
+	if len(execution.Rules) != 0 {
+		t.Fatalf("expected per_ip all-ip direct attachment execution to avoid concrete rules, got %#v", execution)
+	}
+	if !strings.Contains(execution.Reason, "per_ip") || !strings.Contains(execution.Reason, "shared all-client-ip baseline path") {
+		t.Fatalf("expected per_ip all-ip direct attachment execution reason to explain the backend gap, got %q", execution.Reason)
+	}
 }
 
 func TestBuildDirectAttachmentExecutionReportsUnavailableForNonIPKinds(t *testing.T) {

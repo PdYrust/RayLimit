@@ -1,12 +1,13 @@
-# IP Baseline And Exceptions
+# IP Shared Baseline, Per-IP Expansion, And Exceptions
 
 This scenario shows the full IP model on one runtime:
 
-- create a runtime-local baseline
+- create a runtime-local shared baseline
+- preview the evidence-expanded `per_ip` path
 - override one specific IP
 - mark one specific IP as unlimited
 - remove the specific rule cleanly
-- remove the baseline cleanly
+- remove the shared or `per_ip` all-IP state cleanly
 
 ## Start With Inspection
 
@@ -16,34 +17,45 @@ sudo raylimit inspect --pid 1234
 
 Confirm the runtime selection first. Everything that follows is runtime-local.
 
-## 1. Preview And Apply The Runtime-Local Baseline
+## 1. Preview And Apply The Runtime-Local Shared Baseline
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096 --execute
 ```
 
-After this step, the selected runtime has a baseline upload cap for all visible client IPs on `eth0`.
+After this step, the selected runtime has a shared upload baseline for all visible client IPs on `eth0`. `shared` is the default aggregation mode for `--ip all`.
 
-## 2. Add A Specific Override
+## 2. Preview And Apply The Evidence-Expanded `per_ip` Path
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096 --execute
+```
+
+This path expands the current live client IP set through Xray-backed session evidence and reuses the concrete specific-IP planning and execution path for each expanded address.
+
+If evidence is unavailable or insufficient, planning is blocked and execution is refused. If no sessions are currently visible, the report shows `no_sessions` and there is no concrete per-IP work to apply.
+
+## 3. Add A Specific Override
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048 --execute
 ```
 
-That address now has its own explicit upload rate. The baseline still applies to other IPs on the same runtime and direction.
+That address now has its own explicit upload rate. The shared baseline still applies to other IPs on the same runtime and direction.
 
-## 3. Add A Specific Unlimited Exception
+## 4. Add A Specific Unlimited Exception
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
 sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited --execute
 ```
 
-That address now bypasses the baseline for upload on the selected runtime and device.
+That address now bypasses the shared baseline for upload on the selected runtime and device.
 
-## 4. Repeat The Same Request To Check For No-Op
+## 5. Repeat The Same Request To Check For No-Op
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
@@ -51,16 +63,16 @@ sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction uploa
 
 If the managed unlimited state already matches, the command can return a no-op decision instead of pretending a change is needed.
 
-## 5. Remove The Specific Override
+## 6. Remove The Specific Override
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
 ```
 
-That removes only the explicit specific-IP rule for `203.0.113.10`. It does not remove the runtime-local baseline.
+That removes only the explicit specific-IP rule for `203.0.113.10`. It does not remove the runtime-local shared baseline.
 
-## 6. Remove The Specific Unlimited Exception
+## 7. Remove The Specific Unlimited Exception
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --remove
@@ -69,14 +81,23 @@ sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction uploa
 
 Specific-IP remove is intentionally shared across the specific limit and specific unlimited forms. RayLimit clears the explicit specific rule forms for that subject and direction.
 
-## 7. Remove The Baseline
+## 8. Remove The Evidence-Expanded `per_ip` State
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove --execute
+```
+
+That removes only the concrete client-IP state currently proven by live evidence. Shared root-qdisc cleanup remains conservative and runs only when the current visible client IP set proves that cleanup is safe.
+
+## 9. Remove The Shared Baseline
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove --execute
 ```
 
-That removes the runtime-local baseline itself.
+That removes the runtime-local shared baseline itself.
 
 ## Optional Download-Side Variant
 
@@ -89,7 +110,8 @@ sudo raylimit limit --pid 1234 --ip 2001:db8::10 --device eth0 --direction downl
 
 ## Operator Notes
 
-- a specific override does not delete or weaken the baseline
-- a specific unlimited rule bypasses the baseline only for that IP and direction
+- a specific override does not delete or weaken the shared baseline
+- a specific unlimited rule bypasses the shared baseline only for that IP and direction
+- `per_ip` work is limited to the client IPs currently proven by live evidence
 - remove stays scoped to the selected subject
 - repeated preview commands are useful because they show whether the state is already correct

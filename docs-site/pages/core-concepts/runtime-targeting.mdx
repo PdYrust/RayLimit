@@ -21,7 +21,7 @@ Runtime locality is part of the product contract:
 - another runtime gets a different identity even if the tag or IP string is the same
 - observation, reconcile, and cleanup all stay inside that runtime boundary
 
-That matters directly for the IP model. `--ip all` is a baseline for one selected runtime only. It is not a host-global default and it does not automatically cover other runtimes on the same host.
+That matters directly for the IP model. `--ip all` is always scoped to one selected runtime only. In shared mode it is one runtime-local shared baseline. In `per_ip` mode it expands only the client IPs currently proven for that runtime. It is not a host-global default and it does not automatically cover other runtimes on the same host.
 
 ## Selection Rules That Matter In Practice
 

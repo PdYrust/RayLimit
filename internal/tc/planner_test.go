@@ -187,6 +187,9 @@ func TestPlannerPlanApplyBuildsIPBaselineAllMatchAllCommands(t *testing.T) {
 	if !plan.Action.Subject.All {
 		t.Fatalf("expected baseline subject to remain explicit in the plan, got %#v", plan.Action.Subject)
 	}
+	if plan.Binding.Identity == nil || plan.Binding.Identity.NormalizedIPAggregation() != policy.IPAggregationModeShared {
+		t.Fatalf("expected shared all-ip plan binding identity, got %#v", plan.Binding)
+	}
 	if plan.AttachmentExecution.Readiness != BindingReadinessReady || len(plan.AttachmentExecution.Rules) != 1 {
 		t.Fatalf("expected one ready baseline attachment rule, got %#v", plan.AttachmentExecution)
 	}
@@ -198,6 +201,67 @@ func TestPlannerPlanApplyBuildsIPBaselineAllMatchAllCommands(t *testing.T) {
 	}
 	if got := strings.Join(plan.Steps[2].Command.Args, " "); !strings.Contains(got, "matchall") || !strings.Contains(got, "classid "+plan.Handles.ClassID) {
 		t.Fatalf("expected baseline matchall classify command, got %q", got)
+	}
+}
+
+func TestPlannerPlanApplyKeepsIPAllPerIPDistinctAndNonExecuting(t *testing.T) {
+	sharedDesired := testDesiredStateForPolicy(t, policy.Policy{
+		Name: "ip-all-shared-limit",
+		Target: policy.Target{
+			Kind: policy.TargetKindIP,
+			All:  true,
+		},
+		Limits: policy.LimitPolicy{
+			Upload: &policy.RateLimit{BytesPerSecond: 2048},
+		},
+	})
+	perIPDesired := testDesiredStateForPolicy(t, policy.Policy{
+		Name: "ip-all-per-ip-limit",
+		Target: policy.Target{
+			Kind:          policy.TargetKindIP,
+			All:           true,
+			IPAggregation: policy.IPAggregationModePerIP,
+		},
+		Limits: policy.LimitPolicy{
+			Upload: &policy.RateLimit{BytesPerSecond: 2048},
+		},
+	})
+
+	scope := Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	}
+	sharedPlan, err := (Planner{}).Plan(limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: sharedDesired.Subject,
+		Desired: &sharedDesired,
+	}, scope)
+	if err != nil {
+		t.Fatalf("expected shared all-ip apply plan to succeed, got %v", err)
+	}
+	perIPPlan, err := (Planner{}).Plan(limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: perIPDesired.Subject,
+		Desired: &perIPDesired,
+	}, scope)
+	if err != nil {
+		t.Fatalf("expected per_ip all-ip apply plan to succeed, got %v", err)
+	}
+
+	if sharedPlan.Handles.ClassID == perIPPlan.Handles.ClassID {
+		t.Fatalf("expected shared and per_ip all-ip plans to keep distinct class identities, got %q", sharedPlan.Handles.ClassID)
+	}
+	if perIPPlan.Binding.Readiness != BindingReadinessPartial {
+		t.Fatalf("expected per_ip all-ip binding readiness to stay partial, got %#v", perIPPlan.Binding)
+	}
+	if perIPPlan.Binding.Identity == nil || perIPPlan.Binding.Identity.NormalizedIPAggregation() != policy.IPAggregationModePerIP {
+		t.Fatalf("expected per_ip all-ip plan binding identity to preserve aggregation, got %#v", perIPPlan.Binding)
+	}
+	if perIPPlan.AttachmentExecution.Readiness != BindingReadinessUnavailable || len(perIPPlan.AttachmentExecution.Rules) != 0 {
+		t.Fatalf("expected per_ip all-ip plan to avoid direct attachment execution, got %#v", perIPPlan.AttachmentExecution)
+	}
+	if len(perIPPlan.Steps) != 0 {
+		t.Fatalf("expected per_ip all-ip plan to defer concrete tc steps, got %#v", perIPPlan.Steps)
 	}
 }
 

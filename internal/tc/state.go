@@ -107,6 +107,88 @@ func (s Snapshot) EligibleForRootQDiscCleanup(rootHandle string, classID string)
 	return true
 }
 
+// EligibleForRootQDiscCleanupAfterManagedObjectRemoval reports whether removing
+// the selected observed managed objects would leave only the RayLimit-managed
+// root qdisc state for this scope.
+func (s Snapshot) EligibleForRootQDiscCleanupAfterManagedObjectRemoval(rootHandle string, objects []ManagedObject) bool {
+	if err := validateHandleMajor(rootHandle); err != nil {
+		return false
+	}
+	if len(objects) == 0 {
+		return false
+	}
+	if len(s.QDiscs) != 1 {
+		return false
+	}
+
+	qdisc := s.QDiscs[0]
+	if strings.TrimSpace(qdisc.Kind) != "htb" {
+		return false
+	}
+	if strings.TrimSpace(qdisc.Handle) != strings.TrimSpace(rootHandle) {
+		return false
+	}
+	if strings.TrimSpace(qdisc.Parent) != "root" {
+		return false
+	}
+
+	observedRoot := false
+	ignoredClasses := make(map[string]struct{}, len(objects))
+	ignoredDirectFilters := make(map[string]struct{}, len(objects))
+	for _, object := range objects {
+		if err := object.Validate(); err != nil {
+			return false
+		}
+		if strings.TrimSpace(object.RootHandle) != strings.TrimSpace(rootHandle) {
+			continue
+		}
+
+		switch object.Kind {
+		case ManagedObjectRootQDisc:
+			observedRoot = true
+		case ManagedObjectClass:
+			ignoredClasses[strings.TrimSpace(object.ID)] = struct{}{}
+		case ManagedObjectDirectAttachmentFilter:
+			ignoredDirectFilters[strings.TrimSpace(object.ID)] = struct{}{}
+		}
+	}
+	if !observedRoot {
+		return false
+	}
+
+	for _, class := range s.Classes {
+		if strings.TrimSpace(class.Parent) != strings.TrimSpace(rootHandle) {
+			return false
+		}
+		if _, ok := ignoredClasses[strings.TrimSpace(class.ClassID)]; ok {
+			continue
+		}
+		return false
+	}
+
+	for _, filter := range s.Filters {
+		if strings.TrimSpace(filter.Parent) != strings.TrimSpace(rootHandle) {
+			return false
+		}
+		if _, ok := ignoredDirectFilters[filterDirectAttachmentManagedObjectID(filter, rootHandle)]; ok {
+			continue
+		}
+		return false
+	}
+
+	return true
+}
+
+func filterDirectAttachmentManagedObjectID(filter FilterState, rootHandle string) string {
+	return directAttachmentManagedObjectID(
+		rootHandle,
+		filter.Kind,
+		filter.Protocol,
+		filter.Preference,
+		filter.FlowID,
+	)
+}
+
 // QDiscState captures a minimal observed qdisc.
 type QDiscState struct {
 	Kind   string `json:"kind"`

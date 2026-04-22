@@ -40,6 +40,15 @@ func TestLimitTargetSelectionValidateAcceptsSupportedKinds(t *testing.T) {
 			wantValue: "all",
 		},
 		{
+			name: "ip-all-per-ip",
+			selection: limitTargetSelection{
+				IP:            "all",
+				IPAggregation: policy.IPAggregationModePerIP,
+			},
+			wantKind:  policy.TargetKindIP,
+			wantValue: "all",
+		},
+		{
 			name:      "inbound",
 			selection: limitTargetSelection{Inbound: "api-in"},
 			wantKind:  policy.TargetKindInbound,
@@ -90,6 +99,51 @@ func TestLimitTargetSelectionValidateRejectsMissingOrMultipleTargets(t *testing.
 	}
 
 	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.selection.Validate()
+			if err == nil {
+				t.Fatal("expected selection validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLimitTargetSelectionValidateRejectsInvalidIPAggregationUsage(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection limitTargetSelection
+		want      string
+	}{
+		{
+			name: "specific-ip",
+			selection: limitTargetSelection{
+				IP:            "203.0.113.10",
+				IPAggregation: policy.IPAggregationModePerIP,
+			},
+			want: "--ip-aggregation is only valid with --ip all",
+		},
+		{
+			name: "inbound",
+			selection: limitTargetSelection{
+				Inbound:       "api-in",
+				IPAggregation: policy.IPAggregationModePerIP,
+			},
+			want: "--ip-aggregation is only valid with --ip all",
+		},
+		{
+			name: "invalid-mode",
+			selection: limitTargetSelection{
+				IP:            "all",
+				IPAggregation: policy.IPAggregationMode("fanout"),
+			},
+			want: "invalid --ip-aggregation value",
+		},
+	}
+
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.selection.Validate()
 			if err == nil {
@@ -163,6 +217,9 @@ func TestLimitTargetSelectionPolicyTargetBuildsExpectedTarget(t *testing.T) {
 	if ipTarget.Kind != policy.TargetKindIP || ipTarget.Value != "203.0.113.10" {
 		t.Fatalf("unexpected ip target: %#v", ipTarget)
 	}
+	if ipTarget.IPAggregation != "" {
+		t.Fatalf("expected specific ip target to keep aggregation empty, got %#v", ipTarget)
+	}
 
 	allTarget, err := (limitTargetSelection{IP: "all"}).policyTarget()
 	if err != nil {
@@ -170,5 +227,22 @@ func TestLimitTargetSelectionPolicyTargetBuildsExpectedTarget(t *testing.T) {
 	}
 	if allTarget.Kind != policy.TargetKindIP || !allTarget.All || allTarget.Value != "" {
 		t.Fatalf("unexpected ip all target: %#v", allTarget)
+	}
+	if allTarget.IPAggregation != policy.IPAggregationModeShared {
+		t.Fatalf("expected ip all target to map to shared aggregation, got %#v", allTarget)
+	}
+
+	perIPTarget, err := (limitTargetSelection{
+		IP:            "all",
+		IPAggregation: policy.IPAggregationModePerIP,
+	}).policyTarget()
+	if err != nil {
+		t.Fatalf("expected per_ip ip target construction to succeed, got %v", err)
+	}
+	if perIPTarget.Kind != policy.TargetKindIP || !perIPTarget.All || perIPTarget.Value != "" {
+		t.Fatalf("unexpected per_ip ip all target: %#v", perIPTarget)
+	}
+	if perIPTarget.IPAggregation != policy.IPAggregationModePerIP {
+		t.Fatalf("expected ip all target to preserve per_ip aggregation, got %#v", perIPTarget)
 	}
 }

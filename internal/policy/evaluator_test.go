@@ -255,8 +255,11 @@ func TestEvaluatorEvaluateSpecificIPOverrideBeatsBaselineAll(t *testing.T) {
 	if evaluation.EffectiveLimits.Download == nil || evaluation.EffectiveLimits.Download.BytesPerSecond != 4096 {
 		t.Fatalf("expected specific ip limit to become effective, got %#v", evaluation.EffectiveLimits)
 	}
-	if !strings.Contains(evaluation.EffectiveReason, "ip all baseline") {
+	if !strings.Contains(evaluation.EffectiveReason, "shared --ip all baseline") {
 		t.Fatalf("expected effective reason to mention the baseline, got %#v", evaluation)
+	}
+	if len(evaluation.NonWinningPolicies()) != 1 || evaluation.NonWinningPolicies()[0].Policy.Target.NormalizedIPAggregation() != IPAggregationModeShared {
+		t.Fatalf("expected matching ip all baseline to normalize to shared aggregation, got %#v", evaluation.NonWinningPolicies())
 	}
 }
 

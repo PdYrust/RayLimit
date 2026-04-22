@@ -69,8 +69,21 @@ func (k IdentityKind) Valid() bool {
 // TrafficIdentity captures the classifier-facing identity a future tc backend
 // would need in order to bind traffic to a logical subject.
 type TrafficIdentity struct {
-	Kind  IdentityKind `json:"kind"`
-	Value string       `json:"value"`
+	Kind          IdentityKind             `json:"kind"`
+	Value         string                   `json:"value"`
+	IPAggregation policy.IPAggregationMode `json:"ip_aggregation,omitempty"`
+}
+
+func (i TrafficIdentity) NormalizedIPAggregation() policy.IPAggregationMode {
+	if i.Kind != IdentityKindAllClientIP {
+		return ""
+	}
+
+	if strings.TrimSpace(string(i.IPAggregation)) == "" {
+		return policy.IPAggregationModeShared
+	}
+
+	return i.IPAggregation
 }
 
 func (i TrafficIdentity) Validate() error {
@@ -78,13 +91,33 @@ func (i TrafficIdentity) Validate() error {
 		return fmt.Errorf("invalid traffic identity kind %q", i.Kind)
 	}
 	if i.Kind == IdentityKindAllClientIP {
+		if strings.TrimSpace(i.Value) != "" {
+			return errors.New("all-client-ip traffic identity cannot define a value")
+		}
+		if strings.TrimSpace(string(i.IPAggregation)) != "" && !i.IPAggregation.Valid() {
+			return fmt.Errorf("invalid all-client-ip traffic identity aggregation %q", i.IPAggregation)
+		}
 		return nil
+	}
+	if strings.TrimSpace(string(i.IPAggregation)) != "" {
+		return fmt.Errorf("%s traffic identity cannot use ip_aggregation", i.Kind)
 	}
 	if strings.TrimSpace(i.Value) == "" {
 		return errors.New("traffic identity value is required")
 	}
 
 	return nil
+}
+
+func isAllIPPerIPSubject(subject limiter.Subject) bool {
+	return subject.Kind == policy.TargetKindIP &&
+		subject.All &&
+		subject.NormalizedIPAggregation() == policy.IPAggregationModePerIP
+}
+
+func isAllClientIPPerIPIdentity(identity TrafficIdentity) bool {
+	return identity.Kind == IdentityKindAllClientIP &&
+		identity.NormalizedIPAggregation() == policy.IPAggregationModePerIP
 }
 
 // Binding describes how a logical limiter subject maps to a future
@@ -120,6 +153,17 @@ func (b Binding) Validate() error {
 	if !b.RequestedSubject.Equal(b.EffectiveSubject) {
 		return errors.New("requested and effective subjects must match")
 	}
+	if b.RequestedSubject.Kind == policy.TargetKindIP && b.RequestedSubject.All {
+		if b.Identity == nil {
+			return nil
+		}
+		if b.Identity.Kind != IdentityKindAllClientIP {
+			return errors.New("all-ip subjects require an all-client-ip traffic identity")
+		}
+		if b.Identity.NormalizedIPAggregation() != b.RequestedSubject.NormalizedIPAggregation() {
+			return errors.New("all-ip traffic identity aggregation does not match the requested subject")
+		}
+	}
 
 	return nil
 }
@@ -140,7 +184,14 @@ func BindSubject(subject limiter.Subject) (Binding, error) {
 	case policy.TargetKindIP:
 		if subject.All {
 			binding.Identity = &TrafficIdentity{
-				Kind: IdentityKindAllClientIP,
+				Kind:          IdentityKindAllClientIP,
+				IPAggregation: subject.NormalizedIPAggregation(),
+			}
+			if isAllIPPerIPSubject(subject) {
+				binding.Readiness = BindingReadinessPartial
+				binding.Confidence = BindingConfidenceHigh
+				binding.Reason = "all-IP per_ip subjects require one concrete client-ip identity per matched client and per-client class fanout; current tc planning supports only the shared all-client-ip baseline path"
+				break
 			}
 			binding.Readiness = BindingReadinessReady
 			binding.Confidence = BindingConfidenceHigh

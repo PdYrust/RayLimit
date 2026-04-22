@@ -20,31 +20,41 @@ sudo raylimit inspect --pid 1234 --format json
 
 Inspection gives you the runtime identity, source information, and API capability hints available from local discovery. It is the correct next step before you attempt limiter planning.
 
-## 3. Preview A Runtime-Local IP Baseline
+## 3. Preview A Runtime-Local Shared IP Baseline
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
 ```
 
-`--ip all` means “all visible client IPs on this selected runtime.” It does not mean all runtimes on the host and it does not mean a synthetic single-IP identity.
+`--ip all` means “all visible client IPs on this selected runtime.” It does not mean all runtimes on the host and it does not mean a synthetic single-IP identity. Without `--ip-aggregation`, this is the default shared all-IP baseline.
 
-## 4. Add A Specific Override
+## 4. Preview Evidence-Expanded `per_ip` Planning
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096
+```
+
+This keeps the same runtime-local all-IP selection, but expands the current live client IP set through Xray-backed session evidence and plans one concrete entry per usable client IP.
+
+If evidence is unavailable or insufficient, planning is blocked and execution is refused. If the runtime currently has no visible sessions, the report shows `no_sessions` and there is no concrete per-IP work to apply or remove.
+
+## 5. Add A Specific Override
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
 ```
 
-That command defines a specific rate for one address. When the specific rule and the baseline both match, the specific IP rule becomes the effective state for that address.
+That command defines a specific rate for one address. When the specific rule and the shared baseline both match, the specific IP rule becomes the effective state for that address.
 
-## 5. Add A Specific Unlimited Exception
+## 6. Add A Specific Unlimited Exception
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
 ```
 
-That command creates a specific no-limit exception. The selected IP bypasses the runtime-local baseline for that direction.
+That command creates a specific no-limit exception. The selected IP bypasses the runtime-local shared baseline for that direction.
 
-## 6. Preview The Other Families
+## 7. Preview The Other Families
 
 ```bash
 sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048
@@ -53,11 +63,12 @@ sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction up
 
 Inbound and outbound stay conservative until RayLimit can derive a concrete selector from readable runtime configuration.
 
-## 7. Read The Dry-Run Report Correctly
+## 8. Read The Dry-Run Report Correctly
 
 Before adding `--execute`, look at:
 
 - `Requested state`
+- `Per-IP expansion` when `--ip-aggregation per_ip` is in use
 - `Observation`
 - `Decision`
 - `Plan`
@@ -67,7 +78,7 @@ If the path is blocked, RayLimit is telling you that the selector or observed st
 
 If the path is already correct, the command can become a no-op. If the path exists but differs, the command can move into a replacement or reapply path instead of pretending the old state is fine.
 
-## 8. Execute Only After The Preview Looks Honest
+## 9. Execute Only After The Preview Looks Honest
 
 ```bash
 sudo raylimit limit --pid 1234 --outbound proxy-out --device eth0 --direction upload --rate 2048 --execute
@@ -80,17 +91,18 @@ Use live execution only when:
 - the observed state is understandable
 - the plan matches what you intend to change
 
-## 9. Remove Managed State Conservatively
+## 10. Remove Managed State Conservatively
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --remove --execute
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --remove
 ```
 
-Remove uses the same runtime and subject selection model as apply. It removes only the managed state RayLimit can attribute to that path.
+Remove uses the same runtime and subject selection model as apply. Shared remove deletes the shared all-IP baseline. `per_ip` remove is limited to the client IPs currently proven by live evidence and performs shared root-qdisc cleanup only when the current visible client IP set proves that cleanup is safe.
 
-## 10. Remember That Direction Is Separate
+## 11. Remember That Direction Is Separate
 
 RayLimit plans one direction at a time:
 

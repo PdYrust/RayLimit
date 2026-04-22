@@ -193,6 +193,89 @@ func TestDesiredManagedStateForIPBaselinePlanUsesAllOwnerKey(t *testing.T) {
 	}
 }
 
+func TestDesiredManagedStateForIPAllPerIPPlanDefersOwnedObjects(t *testing.T) {
+	desired := testDesiredStateForPolicy(t, policy.Policy{
+		Name: "ip-all-per-ip-limit",
+		Target: policy.Target{
+			Kind:          policy.TargetKindIP,
+			All:           true,
+			IPAggregation: policy.IPAggregationModePerIP,
+		},
+		Limits: policy.LimitPolicy{
+			Upload: &policy.RateLimit{BytesPerSecond: 2048},
+		},
+	})
+	plan, err := (Planner{}).Plan(limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: desired.Subject,
+		Desired: &desired,
+	}, Scope{
+		Device:    "eth0",
+		Direction: DirectionUpload,
+	})
+	if err != nil {
+		t.Fatalf("expected per_ip managed test plan to succeed, got %v", err)
+	}
+
+	state, err := DesiredManagedState(plan)
+	if err != nil {
+		t.Fatalf("expected per_ip desired managed state to succeed, got %v", err)
+	}
+
+	if !strings.Contains(state.OwnerKey, "|ip|all|per_ip") {
+		t.Fatalf("expected per_ip owner key to stay distinct, got %#v", state)
+	}
+	if len(state.Objects) != 0 {
+		t.Fatalf("expected per_ip desired managed state to defer concrete owned objects, got %#v", state.Objects)
+	}
+}
+
+func TestReconcileInputForPlanUsesDerivedManagedStateSets(t *testing.T) {
+	plan := testManagedPlan(t, policy.TargetKindIP, DirectionUpload, 2048)
+	snapshot := Snapshot{
+		Device: "eth0",
+		QDiscs: []QDiscState{{
+			Kind:   "htb",
+			Handle: plan.Handles.RootHandle,
+			Parent: "root",
+		}},
+		Classes: []ClassState{{
+			Kind:               "htb",
+			ClassID:            plan.Handles.ClassID,
+			Parent:             plan.Handles.RootHandle,
+			RateBytesPerSecond: 2048,
+		}},
+		Filters: []FilterState{{
+			Kind:       "u32",
+			Parent:     plan.Handles.RootHandle,
+			Protocol:   "ip",
+			Preference: plan.AttachmentExecution.Rules[0].Preference,
+			FlowID:     plan.Handles.ClassID,
+		}},
+	}
+
+	input, err := ReconcileInputForPlan(snapshot, NftablesSnapshot{}, plan)
+	if err != nil {
+		t.Fatalf("expected reconcile input derivation to succeed, got %v", err)
+	}
+
+	if input.Desired.OwnerKey != input.Observed.OwnerKey {
+		t.Fatalf("expected desired and observed owner keys to match, got %#v", input)
+	}
+	if len(input.Desired.Objects) != 3 {
+		t.Fatalf("expected desired managed state to include three objects, got %#v", input.Desired.Objects)
+	}
+	if len(input.Observed.Objects) != 3 {
+		t.Fatalf("expected observed managed state to include three objects, got %#v", input.Observed.Objects)
+	}
+	if input.Desired.Objects[0].fingerprint() > input.Desired.Objects[1].fingerprint() {
+		t.Fatalf("expected desired managed objects to remain deterministically sorted, got %#v", input.Desired.Objects)
+	}
+	if input.Observed.Objects[0].fingerprint() > input.Observed.Objects[1].fingerprint() {
+		t.Fatalf("expected observed managed objects to remain deterministically sorted, got %#v", input.Observed.Objects)
+	}
+}
+
 func TestDesiredManagedStateForIPUnlimitedPlanOmitsClassOwnership(t *testing.T) {
 	desired := testDesiredStateForPolicy(t, policy.Policy{
 		Name:   "ip-unlimited",

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/PdYrust/RayLimit/internal/limiter"
+	"github.com/PdYrust/RayLimit/internal/policy"
 )
 
 type DirectAttachmentClassifier string
@@ -84,6 +85,9 @@ func (r DirectAttachmentRule) Validate() error {
 			return fmt.Errorf("invalid direct attachment rule match field %q", r.MatchField)
 		}
 	case IdentityKindAllClientIP:
+		if r.Identity.NormalizedIPAggregation() != policy.IPAggregationModeShared {
+			return errors.New("all-client-ip direct attachment rules currently support only shared ip_aggregation")
+		}
 		if r.Classifier != DirectAttachmentClassifierMatchAll {
 			return errors.New("all-client-ip direct attachment rules require the matchall classifier")
 		}
@@ -189,6 +193,7 @@ func (r DirectAttachmentRule) prefixLength() int {
 func (r DirectAttachmentRule) Key() string {
 	return strings.Join([]string{
 		string(r.Identity.Kind),
+		string(r.Identity.NormalizedIPAggregation()),
 		string(r.Classifier),
 		string(r.Disposition),
 		strings.TrimSpace(r.Identity.Value),
@@ -356,6 +361,13 @@ func BuildDirectAttachmentExecution(binding Binding, scope Scope, mode limiter.D
 			execution.Reason = "concrete client-ip attachment rule was derived for the selected direct limiter subject"
 		}
 	case IdentityKindAllClientIP:
+		if isAllClientIPPerIPIdentity(*binding.Identity) {
+			execution.Reason = "all-client-ip per_ip direct attachment execution is not planned yet; current tc backend supports only the shared all-client-ip baseline path"
+			if err := execution.Validate(); err != nil {
+				return DirectAttachmentExecution{}, err
+			}
+			return execution, nil
+		}
 		if mode != limiter.DesiredModeLimit {
 			execution.Reason = "all-client-ip direct attachment currently supports only the baseline limit mode"
 			if err := execution.Validate(); err != nil {
@@ -366,7 +378,8 @@ func BuildDirectAttachmentExecution(binding Binding, scope Scope, mode limiter.D
 
 		rule := DirectAttachmentRule{
 			Identity: TrafficIdentity{
-				Kind: IdentityKindAllClientIP,
+				Kind:          IdentityKindAllClientIP,
+				IPAggregation: binding.Identity.NormalizedIPAggregation(),
 			},
 			Classifier:  DirectAttachmentClassifierMatchAll,
 			Disposition: DirectAttachmentDispositionClassify,

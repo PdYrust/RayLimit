@@ -13,6 +13,7 @@ import (
 
 	"github.com/PdYrust/RayLimit/internal/buildinfo"
 	"github.com/PdYrust/RayLimit/internal/discovery"
+	"github.com/PdYrust/RayLimit/internal/ipaddr"
 	"github.com/PdYrust/RayLimit/internal/limiter"
 	"github.com/PdYrust/RayLimit/internal/policy"
 	"github.com/PdYrust/RayLimit/internal/tc"
@@ -112,7 +113,7 @@ func (o limitOptions) Validate() error {
 			return errors.New("cannot use --unlimited with --remove")
 		}
 		if targetRule.Kind != policy.TargetKindIP || targetRule.All {
-			return errors.New("--unlimited requires a specific --ip target")
+			return errors.New("--unlimited is only valid with a specific --ip target")
 		}
 	}
 	if o.operation == limitOperationRemove {
@@ -127,7 +128,7 @@ func (o limitOptions) Validate() error {
 		return errors.New("rate must be greater than zero")
 	}
 	if o.allowMissingTCState && !o.execute {
-		return errors.New("cannot use --allow-missing-tc-state without --execute")
+		return errors.New("--allow-missing-tc-state requires --execute")
 	}
 
 	return nil
@@ -171,6 +172,22 @@ type limitObservedState struct {
 	Applied     []limiter.AppliedState
 	TCSnapshot  tc.Snapshot
 	NFTSnapshot tc.NftablesSnapshot
+}
+
+type limitConcretePreviewResult struct {
+	Report         limitReport
+	Plan           *tc.Plan
+	Subject        limiter.Subject
+	Desired        *limiter.DesiredState
+	ObservedState  limitObservedState
+	ReconcileInput *tc.PeriodicReconcileInput
+}
+
+type limitPerIPPreviewIssue struct {
+	Target           limitTargetReport
+	Err              error
+	ExecutionBlocked bool
+	ExecutionNote    string
 }
 
 type limitAttachmentObservation struct {
@@ -219,32 +236,205 @@ func (r limitDirectAttachmentReport) hasData() bool {
 		len(r.AttachmentExecution) != 0
 }
 
+type limitPerIPReconcileState string
+
+const (
+	limitPerIPReconcileStateObservedManagedState limitPerIPReconcileState = "observed_managed_state"
+	limitPerIPReconcileStatePartialObservedState limitPerIPReconcileState = "partial_observed_state"
+	limitPerIPReconcileStateNoObservedManaged    limitPerIPReconcileState = "no_observed_managed_state"
+	limitPerIPReconcileStateNoSessions           limitPerIPReconcileState = "no_sessions"
+	limitPerIPReconcileStateInsufficientEvidence limitPerIPReconcileState = "insufficient_evidence"
+	limitPerIPReconcileStateUnavailableEvidence  limitPerIPReconcileState = "unavailable_evidence"
+)
+
+type limitPerIPEntryReport struct {
+	Target           limitTargetReport          `json:"target"`
+	Observation      *limitObservationReport    `json:"observation,omitempty"`
+	Decision         *limitDecisionReport       `json:"decision,omitempty"`
+	Applied          []limiter.AppliedState     `json:"applied,omitempty"`
+	ReconcileInput   *tc.PeriodicReconcileInput `json:"reconcile_input,omitempty"`
+	Plan             *tc.Plan                   `json:"plan,omitempty"`
+	Results          []tc.Result                `json:"results,omitempty"`
+	ExecutionBlocked bool                       `json:"execution_blocked,omitempty"`
+	ExecutionNote    string                     `json:"execution_note,omitempty"`
+}
+
+type limitPerIPDecisionSummary struct {
+	NoOp    int `json:"no_op"`
+	Apply   int `json:"apply"`
+	Replace int `json:"replace"`
+	Remove  int `json:"remove"`
+}
+
+func (s limitPerIPDecisionSummary) hasData() bool {
+	return s.NoOp != 0 || s.Apply != 0 || s.Replace != 0 || s.Remove != 0
+}
+
+func (s limitPerIPDecisionSummary) text() string {
+	return fmt.Sprintf(
+		"%d no-op, %d apply, %d replace, %d remove",
+		s.NoOp,
+		s.Apply,
+		s.Replace,
+		s.Remove,
+	)
+}
+
+func (s limitPerIPDecisionSummary) logFields() []logField {
+	return []logField{
+		intLogField("per_ip_no_op_count", s.NoOp),
+		intLogField("per_ip_apply_count", s.Apply),
+		intLogField("per_ip_replace_count", s.Replace),
+		intLogField("per_ip_remove_count", s.Remove),
+	}
+}
+
+type limitPerIPExpansionReport struct {
+	Provider        string                         `json:"provider,omitempty"`
+	State           discovery.SessionEvidenceState `json:"state,omitempty"`
+	ReconcileState  limitPerIPReconcileState       `json:"reconcile_state,omitempty"`
+	DecisionSummary *limitPerIPDecisionSummary     `json:"decision_summary,omitempty"`
+	ClientIPs       []string                       `json:"client_ips,omitempty"`
+	Note            string                         `json:"note,omitempty"`
+	Entries         []limitPerIPEntryReport        `json:"entries,omitempty"`
+}
+
+func (r limitPerIPExpansionReport) hasData() bool {
+	return strings.TrimSpace(r.Provider) != "" ||
+		r.State != "" ||
+		r.ReconcileState != "" ||
+		(r.DecisionSummary != nil && r.DecisionSummary.hasData()) ||
+		len(r.ClientIPs) != 0 ||
+		r.Note != "" ||
+		len(r.Entries) != 0
+}
+
+func (r limitPerIPExpansionReport) hasPlan() bool {
+	for _, entry := range r.Entries {
+		if entry.Plan != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (r limitPerIPExpansionReport) noOp() bool {
+	if len(r.Entries) == 0 {
+		return false
+	}
+
+	for _, entry := range r.Entries {
+		if entry.ExecutionBlocked || entry.Plan != nil || entry.Decision == nil || entry.Decision.Kind != limiter.DecisionNoOp {
+			return false
+		}
+	}
+
+	return true
+}
+
+type limitTargetReport struct {
+	Kind          policy.TargetKind        `json:"kind"`
+	Value         string                   `json:"value,omitempty"`
+	IPAggregation policy.IPAggregationMode `json:"ip_aggregation,omitempty"`
+}
+
+func (r limitTargetReport) hasIPAggregation() bool {
+	return strings.TrimSpace(string(r.IPAggregation)) != ""
+}
+
+func (r limitTargetReport) displayValue() string {
+	if r.Kind == policy.TargetKindIP && strings.TrimSpace(r.Value) == "" {
+		return "all"
+	}
+
+	return strings.TrimSpace(r.Value)
+}
+
+func (r limitTargetReport) logFields() []logField {
+	fields := []logField{
+		stringLogField("target", describeLimitTarget(r)),
+	}
+	if r.hasIPAggregation() {
+		fields = append(fields, stringLogField("ip_aggregation", string(r.IPAggregation)))
+	}
+
+	return fields
+}
+
 type limitReport struct {
 	Mode             string                       `json:"mode"`
 	Operation        limitOperation               `json:"operation"`
 	Runtime          discovery.RuntimeTarget      `json:"runtime"`
-	TargetKind       policy.TargetKind            `json:"target_kind"`
-	TargetValue      string                       `json:"target_value"`
+	Target           limitTargetReport            `json:"target"`
 	Unlimited        bool                         `json:"unlimited,omitempty"`
 	ExecutionBlocked bool                         `json:"execution_blocked,omitempty"`
 	ExecutionNote    string                       `json:"execution_note,omitempty"`
 	Scope            tc.Scope                     `json:"scope"`
 	RateBytes        int64                        `json:"rate_bytes_per_second,omitempty"`
 	PolicyEvaluation *limitPolicyEvaluationReport `json:"policy_evaluation,omitempty"`
+	PerIPExpansion   *limitPerIPExpansionReport   `json:"per_ip_expansion,omitempty"`
 	DirectAttachment *limitDirectAttachmentReport `json:"direct_attachment,omitempty"`
-	Observation      limitObservationReport       `json:"observation"`
-	Decision         limitDecisionReport          `json:"decision"`
+	Observation      *limitObservationReport      `json:"observation,omitempty"`
+	Decision         *limitDecisionReport         `json:"decision,omitempty"`
 	Plan             *tc.Plan                     `json:"plan,omitempty"`
 	Results          []tc.Result                  `json:"results,omitempty"`
 	ProviderErrors   []discovery.ProviderError    `json:"provider_errors,omitempty"`
+}
+
+func (r limitReport) hasPlannedWork() bool {
+	if r.PerIPExpansion != nil {
+		return r.PerIPExpansion.hasPlan()
+	}
+
+	return r.Plan != nil
+}
+
+func (r limitReport) noOp() bool {
+	if r.PerIPExpansion != nil {
+		return r.PerIPExpansion.noOp()
+	}
+
+	return r.Plan != nil && r.Plan.NoOp
+}
+
+func (r limitReport) logFields() []logField {
+	fields := []logField{
+		stringLogField("mode", r.Mode),
+		stringLogField("operation", string(r.Operation)),
+	}
+	if r.PerIPExpansion != nil {
+		if r.PerIPExpansion.State != "" {
+			fields = append(fields, stringLogField("per_ip_evidence_state", string(r.PerIPExpansion.State)))
+		}
+		if r.PerIPExpansion.ReconcileState != "" {
+			fields = append(fields, stringLogField("per_ip_reconcile_state", string(r.PerIPExpansion.ReconcileState)))
+		}
+		if r.PerIPExpansion.DecisionSummary != nil {
+			fields = append(fields, r.PerIPExpansion.DecisionSummary.logFields()...)
+		}
+		if len(r.PerIPExpansion.ClientIPs) != 0 {
+			fields = append(fields, intLogField("expanded_client_ip_count", len(r.PerIPExpansion.ClientIPs)))
+		}
+	}
+
+	return append(fields, r.Target.logFields()...)
+}
+
+func (r limitReport) executionDiagnosticMessage() string {
+	if r.ExecutionBlocked {
+		return "limit execution blocked"
+	}
+
+	return "limit execution failed"
 }
 
 func (a App) newLimitCommand() command {
 	cmd := command{
 		name:        "limit",
 		summary:     "Plan or execute a reconcile-aware traffic limit",
-		usage:       buildinfo.BinaryName + " limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) --device <device> --direction upload|download [--rate <bytes-per-second> | --unlimited | --remove] [--source host_process|docker_container] (--pid <pid> | --container <id-or-name> | --name <name>) [--execute] [--allow-missing-tc-state] [--format text|json]",
-		description: "Plan a reconcile-aware tc-backed limit flow for a selected runtime target. IP-targeted limiting supports a runtime-local baseline with --ip all, specific per-IP override limits, and specific per-IP unlimited exceptions. Concrete direct client-ip rules cover IPv4, IPv4-mapped IPv6 after canonicalization to IPv4, and IPv6 traffic that fits the current u32 backend assumption of no IPv6 extension headers. Inbound-targeted limiting uses concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag; otherwise it stays conservative and blocks apply execution. Outbound-targeted limiting uses concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark for the selected tag without proxy or dialer-proxy indirection; otherwise it stays conservative and blocks concrete execution.",
+		usage:       buildinfo.BinaryName + " limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) [--ip-aggregation shared|per_ip] --device <device> --direction upload|download [--rate <bytes-per-second> | --unlimited | --remove] [--source host_process|docker_container] (--pid <pid> | --container <id-or-name> | --name <name>) [--execute] [--allow-missing-tc-state] [--format text|json]",
+		description: "Plan a reconcile-aware tc-backed limit flow for a selected runtime target. IP-targeted limiting currently supports a runtime-local shared baseline with --ip all, specific IP override limits, and specific IP unlimited exceptions. When --ip all is combined with --ip-aggregation per_ip, RayLimit expands the current live client IP set into concrete specific-IP work through Xray-backed session evidence for apply and remove. Concrete direct client IP rules cover IPv4, IPv4-mapped IPv6 after canonicalization to IPv4, and IPv6 traffic that fits the current u32 backend assumption of no IPv6 extension headers. Inbound-targeted limiting uses concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag; otherwise it stays conservative and blocks apply execution. Outbound-targeted limiting uses concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark for the selected tag without proxy or dialer-proxy indirection; otherwise it stays conservative and blocks concrete execution.",
 	}
 
 	cmd.help = func(w io.Writer) {
@@ -273,6 +463,7 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	ip := ""
 	inbound := ""
 	outbound := ""
+	ipAggregation := ""
 	unlimited := false
 	execute := false
 	remove := false
@@ -287,9 +478,10 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	flags.StringVar(&direction, "direction", direction, "limit direction")
 	flags.Int64Var(&rate, "rate", rate, "rate limit in bytes per second")
 	flags.StringVar(&ip, "ip", ip, "client IPv4 or IPv6 address or all")
+	flags.StringVar(&ipAggregation, "ip-aggregation", ipAggregation, "IP aggregation mode for --ip all")
 	flags.StringVar(&inbound, "inbound", inbound, "inbound tag")
 	flags.StringVar(&outbound, "outbound", outbound, "outbound tag")
-	flags.BoolVar(&unlimited, "unlimited", unlimited, "create a specific IP no-limit exception")
+	flags.BoolVar(&unlimited, "unlimited", unlimited, "create a specific IP unlimited exception")
 	flags.BoolVar(&execute, "execute", execute, "perform real local tc execution")
 	flags.BoolVar(&remove, "remove", remove, "remove the selected target rule set instead of planning a new one")
 	flags.BoolVar(&allowMissingTCState, "allow-missing-tc-state", allowMissingTCState, "allow real execution when tc state cannot be observed first")
@@ -317,9 +509,10 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 			Container: strings.TrimSpace(container),
 		},
 		target: limitTargetSelection{
-			IP:       strings.TrimSpace(ip),
-			Inbound:  strings.TrimSpace(inbound),
-			Outbound: strings.TrimSpace(outbound),
+			IP:            strings.TrimSpace(ip),
+			Inbound:       strings.TrimSpace(inbound),
+			Outbound:      strings.TrimSpace(outbound),
+			IPAggregation: policy.IPAggregationMode(strings.ToLower(strings.TrimSpace(ipAggregation))),
 		},
 		device:              strings.TrimSpace(device),
 		direction:           tc.Direction(strings.TrimSpace(direction)),
@@ -361,11 +554,13 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 
 	report, execErr := a.limitReport(selectedTargets[0], options, result.ProviderErrors)
 	if err := writeLimitReport(streams.stdout, options.format, report); err != nil {
-		streams.diag.Errorf(logPhaseOutput, "failed to render limit result: %s", err)
+		fields := append(report.logFields(), errorLogField(err))
+		streams.diag.Errorw(logPhaseOutput, "failed to render limit result", fields...)
 		return exitCodeFailure
 	}
 	if execErr != nil {
-		streams.diag.Errorf(logPhaseExecution, "%s", execErr)
+		fields := append(report.logFields(), errorLogField(execErr))
+		streams.diag.Errorw(logPhaseExecution, report.executionDiagnosticMessage(), fields...)
 		return exitCodeFailure
 	}
 
@@ -373,6 +568,29 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 }
 
 func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, providerErrors []discovery.ProviderError) (limitReport, error) {
+	if options.target.NormalizedIPAggregation() == policy.IPAggregationModePerIP {
+		return a.limitPerIPReport(context.Background(), target, options, providerErrors)
+	}
+
+	preview, previewErr := a.limitConcretePreview(context.Background(), target, options.target, options, providerErrors)
+	if previewErr != nil || preview.Plan == nil {
+		return preview.Report, previewErr
+	}
+
+	results, execErr := a.executeLimitPlan(context.Background(), *preview.Plan, options)
+	preview.Report.Results = results
+	if execErr != nil {
+		preview.Report.ExecutionNote = execErr.Error()
+		if options.execute && len(results) == 0 {
+			preview.Report.ExecutionBlocked = true
+		}
+		return preview.Report, fmt.Errorf("limit execution failed: %w", execErr)
+	}
+
+	return preview.Report, nil
+}
+
+func (a App) limitPerIPReport(ctx context.Context, target discovery.RuntimeTarget, options limitOptions, providerErrors []discovery.ProviderError) (limitReport, error) {
 	runtime, err := discovery.SessionRuntimeFromTarget(target)
 	if err != nil {
 		return limitReport{}, fmt.Errorf("failed to bind selected runtime: %w", err)
@@ -389,7 +607,7 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 		Direction: options.direction,
 	}
 
-	subject, desired, err := a.limitState(session, options.target, options)
+	_, desired, err := a.limitState(session, options.target, options)
 	if err != nil {
 		return limitReport{}, err
 	}
@@ -398,8 +616,7 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 		Mode:           limitMode(options.execute),
 		Operation:      options.operation,
 		Runtime:        target,
-		TargetKind:     options.target.Kind(),
-		TargetValue:    options.target.Value(),
+		Target:         limitTargetReportFromSelection(options.target),
 		Unlimited:      options.unlimited,
 		Scope:          scope,
 		RateBytes:      options.rateBytes,
@@ -409,108 +626,263 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 		report.PolicyEvaluation = limitPolicyEvaluationFromEvaluation(desired.PolicyEvaluation)
 	}
 
-	observedState, err := a.observeLimitState(context.Background(), target, subject, desired, scope, options.operation)
+	evidenceResult, err := a.sessionEvidenceProvider().ObserveSessions(ctx, runtime)
 	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to inspect current tc state: %w", err)
+		return report, fmt.Errorf("failed to observe live client IP evidence: %w", err)
 	}
-	report.Observation = observedState.Observation
+
+	clientIPs := limitPerIPClientIPs(evidenceResult)
+	expansion := &limitPerIPExpansionReport{
+		Provider:  strings.TrimSpace(evidenceResult.Provider),
+		State:     evidenceResult.State(),
+		ClientIPs: clientIPs,
+		Note:      limitPerIPExpansionNote(options.operation, evidenceResult, clientIPs),
+	}
+	report.PerIPExpansion = expansion
+
+	switch expansion.State {
+	case discovery.SessionEvidenceStateUnavailable, discovery.SessionEvidenceStateInsufficient:
+		expansion.ReconcileState = limitPerIPReconcileStateFromEvidenceState(expansion.State)
+		report.ExecutionBlocked = true
+		report.ExecutionNote = limitPerIPBlockingNote(options.operation, evidenceResult, options.execute)
+		if options.execute {
+			return report, errors.New(report.ExecutionNote)
+		}
+		return report, nil
+	case discovery.SessionEvidenceStateNoSessions:
+		expansion.ReconcileState = limitPerIPReconcileStateNoSessions
+		return report, nil
+	}
+	if len(clientIPs) == 0 {
+		expansion.ReconcileState = limitPerIPReconcileStateNoObservedManaged
+		report.ExecutionBlocked = true
+		report.ExecutionNote = limitPerIPNoUsableClientIPsNote(options.operation, expansion.Note, options.execute)
+		if options.execute {
+			return report, errors.New(report.ExecutionNote)
+		}
+		return report, nil
+	}
+
+	previews := make([]limitConcretePreviewResult, 0, len(clientIPs))
+	previewIssues := make([]limitPerIPPreviewIssue, 0)
+	for _, clientIP := range clientIPs {
+		entryTarget := limitTargetSelection{IP: clientIP}
+		preview, previewErr := a.limitConcretePreview(ctx, target, entryTarget, options, nil)
+		previews = append(previews, preview)
+		entryTargetReport := preview.Report.Target
+		if entryTargetReport.Kind == "" {
+			entryTargetReport = limitTargetReportFromSelection(entryTarget)
+		}
+		entry := limitPerIPEntryReport{
+			Target:           entryTargetReport,
+			Observation:      preview.Report.Observation,
+			Decision:         preview.Report.Decision,
+			Applied:          append([]limiter.AppliedState(nil), preview.ObservedState.Applied...),
+			ReconcileInput:   copyPeriodicReconcileInput(preview.ReconcileInput),
+			Plan:             preview.Report.Plan,
+			ExecutionBlocked: preview.Report.ExecutionBlocked,
+			ExecutionNote:    preview.Report.ExecutionNote,
+		}
+		expansion.Entries = append(expansion.Entries, entry)
+
+		if previewErr != nil {
+			previewIssues = append(previewIssues, limitPerIPPreviewIssue{
+				Target:           entry.Target,
+				Err:              previewErr,
+				ExecutionBlocked: entry.ExecutionBlocked,
+				ExecutionNote:    entry.ExecutionNote,
+			})
+		}
+	}
+
+	if err := limitFinalizePerIPExpansion(options.operation, previews, expansion); err != nil {
+		return report, err
+	}
+	if len(previewIssues) != 0 {
+		message := limitPerIPPreviewIssuesMessage(options.operation, previewIssues, options.execute)
+		if limitPerIPPreviewIssuesBlocked(previewIssues) {
+			report.ExecutionBlocked = true
+			report.ExecutionNote = message
+		}
+		return report, errors.New(message)
+	}
+
+	for index, preview := range previews {
+		plan := preview.Plan
+		if plan == nil {
+			continue
+		}
+
+		results, execErr := a.executeLimitPlan(ctx, *plan, options)
+		expansion.Entries[index].Results = results
+		report.Results = append(report.Results, results...)
+		if execErr != nil {
+			expansion.Entries[index].ExecutionNote = execErr.Error()
+			if options.execute && len(results) == 0 {
+				expansion.Entries[index].ExecutionBlocked = true
+			}
+			report.ExecutionNote = execErr.Error()
+			if options.execute && len(report.Results) == 0 {
+				report.ExecutionBlocked = true
+			}
+			return report, fmt.Errorf("limit execution failed: %w", execErr)
+		}
+	}
+
+	return report, nil
+}
+
+func (a App) limitConcretePreview(ctx context.Context, target discovery.RuntimeTarget, selection limitTargetSelection, options limitOptions, providerErrors []discovery.ProviderError) (limitConcretePreviewResult, error) {
+	runtime, err := discovery.SessionRuntimeFromTarget(target)
+	if err != nil {
+		return limitConcretePreviewResult{}, fmt.Errorf("failed to bind selected runtime: %w", err)
+	}
+
+	session := discovery.Session{Runtime: runtime}
+	selection.apply(&session)
+	if err := session.Validate(); err != nil {
+		return limitConcretePreviewResult{}, fmt.Errorf("failed to construct session context: %w", err)
+	}
+
+	scope := tc.Scope{
+		Device:    options.device,
+		Direction: options.direction,
+	}
+
+	subject, desired, err := a.limitState(session, selection, options)
+	if err != nil {
+		return limitConcretePreviewResult{}, err
+	}
+
+	report := limitReport{
+		Mode:           limitMode(options.execute),
+		Operation:      options.operation,
+		Runtime:        target,
+		Target:         limitTargetReportFromSelection(selection),
+		Unlimited:      options.unlimited,
+		Scope:          scope,
+		RateBytes:      options.rateBytes,
+		ProviderErrors: providerErrors,
+	}
+	if desired != nil {
+		report.PolicyEvaluation = limitPolicyEvaluationFromEvaluation(desired.PolicyEvaluation)
+	}
+
+	observedState, err := a.observeLimitState(ctx, target, subject, desired, scope, options.operation)
+	if err != nil {
+		return limitConcretePreviewResult{}, fmt.Errorf("failed to inspect current tc state: %w", err)
+	}
+	observation := observedState.Observation
+	report.Observation = &observation
 	if directAttachment := limitDirectAttachmentReportFromPlan(observedState.InspectPlan); directAttachment.hasData() {
 		report.DirectAttachment = &directAttachment
 	}
 
 	decision, err := a.limitDecision(options.operation, subject, desired, observedState.Observation, observedState.Applied)
 	if err != nil {
-		return limitReport{}, fmt.Errorf("failed to reconcile desired and observed tc state: %w", err)
+		return limitConcretePreviewResult{}, fmt.Errorf("failed to reconcile desired and observed tc state: %w", err)
 	}
-	report.Decision = limitDecisionReport{
+	decisionReport := limitDecisionReport{
 		Kind:   decision.Kind,
 		Reason: decision.Reason,
 	}
+	report.Decision = &decisionReport
 
 	action, err := decision.Action()
 	if err != nil {
-		return report, fmt.Errorf("failed to derive limiter action from reconcile decision: %w", err)
+		return limitConcretePreviewResult{Report: report, Subject: subject, Desired: desired, ObservedState: observedState}, fmt.Errorf("failed to derive limiter action from reconcile decision: %w", err)
 	}
-	var plan tc.Plan
+	var plan *tc.Plan
 	if action != nil {
-		plan, err = a.limitPlan(context.Background(), target, *action, scope, observedState, options.operation)
+		planned, err := a.limitPlan(ctx, target, *action, scope, observedState, options.operation)
 		if err != nil {
-			return report, fmt.Errorf("failed to build tc plan: %w", err)
+			return limitConcretePreviewResult{Report: report, Subject: subject, Desired: desired, ObservedState: observedState}, fmt.Errorf("failed to build tc plan: %w", err)
 		}
-		report.Plan = &plan
+		report.Plan = &planned
+		plan = &planned
+	}
+	reconcileInput, err := limitPeriodicReconcileInput(subject, desired, observedState, plan, scope, options.operation)
+	if err != nil {
+		return limitConcretePreviewResult{Report: report, Subject: subject, Desired: desired, ObservedState: observedState, Plan: plan}, fmt.Errorf("failed to derive managed-state reconcile input: %w", err)
 	}
 
-	executionPlan := plan
-	if action == nil {
-		executionPlan = observedState.InspectPlan
+	executionPlan := observedState.InspectPlan
+	if plan != nil {
+		executionPlan = *plan
 	}
 
 	if options.execute && options.operation != limitOperationRemove {
-		switch options.target.Kind() {
+		switch selection.Kind() {
 		case policy.TargetKindInbound:
 			if executionPlan.MarkAttachment == nil || executionPlan.MarkAttachment.Readiness != tc.BindingReadinessReady {
 				report.ExecutionBlocked = true
 				report.ExecutionNote = blockedInboundApplyExecutionNote(executionPlan)
-				return report, errors.New(report.ExecutionNote)
+				return limitConcretePreviewResult{Report: report, Plan: plan, Subject: subject, Desired: desired, ObservedState: observedState, ReconcileInput: reconcileInput}, errors.New(report.ExecutionNote)
 			}
 		case policy.TargetKindOutbound:
 			if executionPlan.MarkAttachment == nil || executionPlan.MarkAttachment.Readiness != tc.BindingReadinessReady {
 				report.ExecutionBlocked = true
 				report.ExecutionNote = blockedOutboundApplyExecutionNote(executionPlan)
-				return report, errors.New(report.ExecutionNote)
+				return limitConcretePreviewResult{Report: report, Plan: plan, Subject: subject, Desired: desired, ObservedState: observedState, ReconcileInput: reconcileInput}, errors.New(report.ExecutionNote)
 			}
 		}
 	}
 
 	if options.execute &&
 		options.operation == limitOperationRemove &&
-		(options.target.Kind() == policy.TargetKindInbound || options.target.Kind() == policy.TargetKindOutbound) &&
+		(selection.Kind() == policy.TargetKindInbound || selection.Kind() == policy.TargetKindOutbound) &&
 		(executionPlan.MarkAttachment == nil || executionPlan.MarkAttachment.Readiness != tc.BindingReadinessReady) {
 		hasObservedFWFilter := observedState.TCSnapshot.HasFWClassFilter(executionPlan.Handles.RootHandle, executionPlan.Handles.ClassID)
 		if hasObservedFWFilter {
-			nftSnapshot, _, nftErr := a.nftablesInspector().Inspect(context.Background())
+			nftSnapshot, _, nftErr := a.nftablesInspector().Inspect(ctx)
 			if nftErr != nil {
 				report.ExecutionBlocked = true
-				switch options.target.Kind() {
+				switch selection.Kind() {
 				case policy.TargetKindInbound:
 					report.ExecutionNote = missingObservedInboundRemoveExecutionNote(nftErr)
 				default:
 					report.ExecutionNote = missingObservedOutboundRemoveExecutionNote(nftErr)
 				}
-				return report, errors.New(report.ExecutionNote)
+				return limitConcretePreviewResult{Report: report, Plan: plan, Subject: subject, Desired: desired, ObservedState: observedState, ReconcileInput: reconcileInput}, errors.New(report.ExecutionNote)
 			}
 
 			identityKind := tc.IdentityKindOutbound
-			switch options.target.Kind() {
+			switch selection.Kind() {
 			case policy.TargetKindInbound:
 				identityKind = tc.IdentityKindInbound
 			}
 			if nftSnapshot.HasManagedMarkAttachment(identityKind, scope.Direction, executionPlan.Handles.ClassID) {
 				report.ExecutionBlocked = true
-				switch options.target.Kind() {
+				switch selection.Kind() {
 				case policy.TargetKindInbound:
 					report.ExecutionNote = blockedInboundRemoveExecutionNote(executionPlan)
 				default:
 					report.ExecutionNote = blockedOutboundRemoveExecutionNote(executionPlan)
 				}
-				return report, errors.New(report.ExecutionNote)
+				return limitConcretePreviewResult{Report: report, Plan: plan, Subject: subject, Desired: desired, ObservedState: observedState, ReconcileInput: reconcileInput}, errors.New(report.ExecutionNote)
 			}
 		}
 
 		if hasObservedFWFilter {
 			report.ExecutionBlocked = true
-			switch options.target.Kind() {
+			switch selection.Kind() {
 			case policy.TargetKindInbound:
 				report.ExecutionNote = blockedInboundRemoveExecutionNote(executionPlan)
 			default:
 				report.ExecutionNote = blockedOutboundRemoveExecutionNote(executionPlan)
 			}
-			return report, errors.New(report.ExecutionNote)
+			return limitConcretePreviewResult{Report: report, Plan: plan, Subject: subject, Desired: desired, ObservedState: observedState, ReconcileInput: reconcileInput}, errors.New(report.ExecutionNote)
 		}
 	}
 
-	if action == nil {
-		return report, nil
+	if plan == nil {
+		return limitConcretePreviewResult{
+			Report:         report,
+			Subject:        subject,
+			Desired:        desired,
+			ObservedState:  observedState,
+			ReconcileInput: reconcileInput,
+		}, nil
 	}
 
 	if options.execute &&
@@ -519,26 +891,492 @@ func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, p
 		!observedState.Observation.Reconcilable {
 		report.ExecutionBlocked = true
 		report.ExecutionNote = missingObservedMarkAttachmentExecutionNote(observedState.Observation)
-		return report, errors.New(report.ExecutionNote)
+		return limitConcretePreviewResult{Report: report, Plan: plan, Subject: subject, Desired: desired, ObservedState: observedState, ReconcileInput: reconcileInput}, errors.New(report.ExecutionNote)
 	}
 
 	if options.execute && !observedState.Observation.Reconcilable && !options.allowMissingTCState {
 		report.ExecutionBlocked = true
 		report.ExecutionNote = missingObservedStateExecutionNote(observedState.Observation)
-		return report, errors.New(report.ExecutionNote)
+		return limitConcretePreviewResult{Report: report, Plan: plan, Subject: subject, Desired: desired, ObservedState: observedState, ReconcileInput: reconcileInput}, errors.New(report.ExecutionNote)
 	}
 
-	results, execErr := tc.NewExecutor(a.tcRunner, !options.execute, a.privilegeStatus).Execute(context.Background(), plan)
-	report.Results = results
-	if execErr != nil {
-		if options.execute && len(results) == 0 {
-			report.ExecutionBlocked = true
-			report.ExecutionNote = execErr.Error()
+	return limitConcretePreviewResult{
+		Report:         report,
+		Plan:           plan,
+		Subject:        subject,
+		Desired:        desired,
+		ObservedState:  observedState,
+		ReconcileInput: reconcileInput,
+	}, nil
+}
+
+func (a App) executeLimitPlan(ctx context.Context, plan tc.Plan, options limitOptions) ([]tc.Result, error) {
+	return tc.NewExecutor(a.tcRunner, !options.execute, a.privilegeStatus).Execute(ctx, plan)
+}
+
+func limitPerIPClientIPs(result discovery.SessionEvidenceResult) []string {
+	if len(result.Evidence) == 0 {
+		return nil
+	}
+
+	clientIPs := make([]string, 0, len(result.Evidence))
+	seen := make(map[string]struct{}, len(result.Evidence))
+	for _, session := range result.Sessions() {
+		normalized, err := ipaddr.Normalize(session.Client.IP)
+		if err != nil {
+			continue
 		}
-		return report, fmt.Errorf("limit execution failed: %w", execErr)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		clientIPs = append(clientIPs, normalized)
+	}
+	sort.Strings(clientIPs)
+
+	return clientIPs
+}
+
+func limitPerIPExpansionNote(operation limitOperation, result discovery.SessionEvidenceResult, clientIPs []string) string {
+	switch result.State() {
+	case discovery.SessionEvidenceStateAvailable:
+		if len(clientIPs) == 0 {
+			return "live session evidence was available, but no usable client IPs were returned for per_ip expansion"
+		}
+		return fmt.Sprintf(
+			"expanded the requested per_ip %s into %d concrete client IP target(s) using current live Xray session evidence; concrete work and cleanup stay limited to the client IPs currently proven by that evidence",
+			limitPerIPOperationLabel(operation),
+			len(clientIPs),
+		)
+	case discovery.SessionEvidenceStateNoSessions:
+		return "no live client IPs are currently visible through Xray-backed session evidence for the selected runtime"
+	default:
+		if summary := strings.TrimSpace(result.IssueSummary()); summary != "" {
+			return "per_ip expansion could not build concrete client IP work from current live session evidence; " + summary
+		}
+		return "per_ip expansion could not build concrete client IP work because live client IP evidence is not currently available"
+	}
+}
+
+func limitPerIPBlockingNote(operation limitOperation, result discovery.SessionEvidenceResult, execute bool) string {
+	message := strings.TrimSpace(result.IssueSummary())
+	if message == "" {
+		message = "live client IP evidence is not currently available for per_ip expansion"
 	}
 
-	return report, nil
+	return fmt.Sprintf(
+		"%s requires live client IP evidence for the selected runtime; %s",
+		limitPerIPActivityLabel(operation, execute),
+		message,
+	)
+}
+
+func limitPerIPNoUsableClientIPsNote(operation limitOperation, note string, execute bool) string {
+	detail := strings.TrimSpace(note)
+	if detail == "" {
+		detail = "no usable client IPs were returned from current live session evidence"
+	}
+
+	return fmt.Sprintf(
+		"%s requires at least one usable client IP from current live session evidence for the selected runtime; %s",
+		limitPerIPActivityLabel(operation, execute),
+		detail,
+	)
+}
+
+func limitPerIPOperationLabel(operation limitOperation) string {
+	if operation == limitOperationRemove {
+		return "remove"
+	}
+
+	return "apply"
+}
+
+func limitPerIPActivityLabel(operation limitOperation, execute bool) string {
+	action := fmt.Sprintf("per_ip %s planning", limitPerIPOperationLabel(operation))
+	if execute {
+		action = fmt.Sprintf("real per_ip %s execution", limitPerIPOperationLabel(operation))
+	}
+
+	return action
+}
+
+func resultsHaveFailures(results []tc.Result) bool {
+	for _, result := range results {
+		if strings.TrimSpace(result.Error) != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func writeExecutionStatusText(w io.Writer, prefix string, blocked bool, note string, results []tc.Result) {
+	switch {
+	case blocked:
+		_, _ = fmt.Fprintf(w, "%sExecution status: blocked\n", prefix)
+	case resultsHaveFailures(results):
+		_, _ = fmt.Fprintf(w, "%sExecution status: failed\n", prefix)
+	}
+	if note != "" {
+		_, _ = fmt.Fprintf(w, "%sExecution note: %s\n", prefix, note)
+	}
+}
+
+func describePerIPEntryOutcome(mode string, entry limitPerIPEntryReport) string {
+	switch {
+	case entry.ExecutionBlocked:
+		return "blocked"
+	case resultsHaveFailures(entry.Results):
+		return "failed"
+	case entry.Plan == nil:
+		return "no changes"
+	case mode == "dry-run":
+		return "plan ready"
+	case len(entry.Results) == 0:
+		return "no changes"
+	default:
+		return "executed"
+	}
+}
+
+func describePerIPEntryWork(mode string, entry limitPerIPEntryReport) string {
+	switch {
+	case entry.ExecutionBlocked:
+		return "No concrete commands were run."
+	case resultsHaveFailures(entry.Results):
+		return fmt.Sprintf("Execution stopped after %d command(s).", len(entry.Results))
+	case entry.Plan == nil:
+		return "No concrete tc changes are required."
+	case mode == "dry-run":
+		return fmt.Sprintf("Planned %d command(s).", len(entry.Results))
+	case len(entry.Results) == 0:
+		return "No concrete commands were run."
+	default:
+		return fmt.Sprintf("Executed %d command(s).", len(entry.Results))
+	}
+}
+
+func limitPerIPReconcileStateFromEvidenceState(state discovery.SessionEvidenceState) limitPerIPReconcileState {
+	switch state {
+	case discovery.SessionEvidenceStateInsufficient:
+		return limitPerIPReconcileStateInsufficientEvidence
+	case discovery.SessionEvidenceStateUnavailable:
+		return limitPerIPReconcileStateUnavailableEvidence
+	case discovery.SessionEvidenceStateNoSessions:
+		return limitPerIPReconcileStateNoSessions
+	default:
+		return ""
+	}
+}
+
+func limitPerIPReconcileStateFromEntries(entries []limitPerIPEntryReport) limitPerIPReconcileState {
+	if len(entries) == 0 {
+		return limitPerIPReconcileStateNoObservedManaged
+	}
+
+	observedCount := 0
+	for _, entry := range entries {
+		if limitPerIPEntryHasObservedManagedState(entry) {
+			observedCount++
+		}
+	}
+
+	switch {
+	case observedCount == 0:
+		return limitPerIPReconcileStateNoObservedManaged
+	case observedCount != len(entries):
+		return limitPerIPReconcileStatePartialObservedState
+	default:
+		return limitPerIPReconcileStateObservedManagedState
+	}
+}
+
+func limitPerIPEntryHasObservedManagedState(entry limitPerIPEntryReport) bool {
+	if len(entry.Applied) != 0 {
+		return true
+	}
+	if entry.ReconcileInput == nil {
+		return false
+	}
+
+	for _, object := range entry.ReconcileInput.Observed.Objects {
+		if object.Kind != tc.ManagedObjectRootQDisc {
+			return true
+		}
+	}
+
+	return false
+}
+
+func limitPeriodicReconcileInput(subject limiter.Subject, desired *limiter.DesiredState, observedState limitObservedState, plan *tc.Plan, scope tc.Scope, operation limitOperation) (*tc.PeriodicReconcileInput, error) {
+	basisPlan, ok, err := limitManagedStatePlan(subject, desired, observedState, plan, scope, operation)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+
+	snapshot := observedState.TCSnapshot
+	if strings.TrimSpace(snapshot.Device) == "" {
+		snapshot = tc.Snapshot{Device: scope.Device}
+	}
+
+	input, err := tc.ReconcileInputForPlan(snapshot, observedState.NFTSnapshot, basisPlan)
+	if err != nil {
+		return nil, err
+	}
+
+	return &input, nil
+}
+
+func limitManagedStatePlan(subject limiter.Subject, desired *limiter.DesiredState, observedState limitObservedState, plan *tc.Plan, scope tc.Scope, operation limitOperation) (tc.Plan, bool, error) {
+	if plan != nil {
+		return *plan, true, nil
+	}
+	if desired == nil && operation != limitOperationRemove {
+		return tc.Plan{}, false, nil
+	}
+
+	basis := observedState.InspectPlan
+	basis.Action = limiter.Action{
+		Kind:    limiter.ActionApply,
+		Subject: subject,
+		Desired: desired,
+	}
+	if operation == limitOperationRemove {
+		basis.Action = limiter.Action{
+			Kind:    limiter.ActionRemove,
+			Subject: subject,
+			Applied: append([]limiter.AppliedState(nil), observedState.Applied...),
+		}
+	}
+	basis.Scope = scope
+	if err := basis.Validate(); err != nil {
+		return tc.Plan{}, false, err
+	}
+
+	return basis, true, nil
+}
+
+func copyPeriodicReconcileInput(input *tc.PeriodicReconcileInput) *tc.PeriodicReconcileInput {
+	if input == nil {
+		return nil
+	}
+
+	copied := tc.PeriodicReconcileInput{
+		Desired: tc.ManagedStateSet{
+			OwnerKey: input.Desired.OwnerKey,
+			Objects:  append([]tc.ManagedObject(nil), input.Desired.Objects...),
+		},
+		Observed: tc.ManagedStateSet{
+			OwnerKey: input.Observed.OwnerKey,
+			Objects:  append([]tc.ManagedObject(nil), input.Observed.Objects...),
+		},
+		RetainEvidence: input.RetainEvidence,
+	}
+
+	return &copied
+}
+
+func limitPerIPSharedRemoveCleanup(previews []limitConcretePreviewResult) (int, *tc.Plan, error) {
+	if len(previews) == 0 {
+		return -1, nil, nil
+	}
+
+	for _, preview := range previews {
+		if !preview.ObservedState.Observation.Available || preview.ReconcileInput == nil {
+			return -1, nil, nil
+		}
+	}
+
+	for index := len(previews) - 1; index >= 0; index-- {
+		if previews[index].Plan != nil && planHasStepNamed(previews[index].Plan.Steps, "delete-root-qdisc") {
+			return -1, nil, nil
+		}
+	}
+
+	observed := limitPerIPObservedManagedObjects(previews)
+	if len(observed) == 0 {
+		return -1, nil, nil
+	}
+
+	rootHandle := strings.TrimSpace(previews[0].ObservedState.InspectPlan.Handles.RootHandle)
+	snapshot := previews[0].ObservedState.TCSnapshot
+	if rootHandle == "" || strings.TrimSpace(snapshot.Device) == "" {
+		return -1, nil, nil
+	}
+	if !snapshot.EligibleForRootQDiscCleanupAfterManagedObjectRemoval(rootHandle, observed) {
+		return -1, nil, nil
+	}
+
+	index := limitPerIPSharedCleanupOwnerIndex(previews)
+	if index == -1 {
+		return -1, nil, nil
+	}
+
+	if previews[index].Plan != nil {
+		updated, err := tc.AppendRootQDiscCleanup(*previews[index].Plan)
+		if err != nil {
+			return -1, nil, err
+		}
+		return index, &updated, nil
+	}
+
+	basis := previews[index].ObservedState.InspectPlan
+	basis.Action = limiter.Action{
+		Kind:    limiter.ActionRemove,
+		Subject: previews[index].Subject,
+		Applied: append([]limiter.AppliedState(nil), previews[index].ObservedState.Applied...),
+	}
+	basis.NoOp = false
+	basis.Steps = nil
+	updated, err := tc.AppendRootQDiscCleanup(basis)
+	if err != nil {
+		return -1, nil, err
+	}
+
+	return index, &updated, nil
+}
+
+func limitPerIPObservedManagedObjects(previews []limitConcretePreviewResult) []tc.ManagedObject {
+	seen := make(map[string]struct{})
+	objects := make([]tc.ManagedObject, 0)
+	for _, preview := range previews {
+		if preview.ReconcileInput == nil {
+			continue
+		}
+		for _, object := range preview.ReconcileInput.Observed.Objects {
+			key := object.Key()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			objects = append(objects, object)
+		}
+	}
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].Key() < objects[j].Key()
+	})
+
+	return objects
+}
+
+func limitPerIPSharedCleanupOwnerIndex(previews []limitConcretePreviewResult) int {
+	for index := len(previews) - 1; index >= 0; index-- {
+		if previews[index].Plan != nil {
+			return index
+		}
+	}
+	if len(previews) == 0 {
+		return -1
+	}
+
+	return len(previews) - 1
+}
+
+func limitPerIPSharedCleanupDecisionReason() string {
+	return "the expanded per_ip remove set leaves only the managed root qdisc in observed state; remove that shared root qdisc as final cleanup for the current visible client IP set"
+}
+
+func limitFinalizePerIPExpansion(operation limitOperation, previews []limitConcretePreviewResult, expansion *limitPerIPExpansionReport) error {
+	if operation == limitOperationRemove {
+		cleanupIndex, cleanupPlan, err := limitPerIPSharedRemoveCleanup(previews)
+		if err != nil {
+			return fmt.Errorf("failed to derive shared per_ip remove cleanup: %w", err)
+		}
+		if cleanupPlan != nil {
+			previews[cleanupIndex].Plan = cleanupPlan
+			previews[cleanupIndex].Report.Plan = cleanupPlan
+			expansion.Entries[cleanupIndex].Plan = cleanupPlan
+			if expansion.Entries[cleanupIndex].Decision == nil || expansion.Entries[cleanupIndex].Decision.Kind == limiter.DecisionNoOp {
+				expansion.Entries[cleanupIndex].Decision = &limitDecisionReport{
+					Kind:   limiter.DecisionRemove,
+					Reason: limitPerIPSharedCleanupDecisionReason(),
+				}
+			}
+		}
+	}
+
+	expansion.DecisionSummary = limitPerIPDecisionSummaryFromEntries(expansion.Entries)
+	expansion.ReconcileState = limitPerIPReconcileStateFromEntries(expansion.Entries)
+	if operation == limitOperationRemove &&
+		expansion.ReconcileState == limitPerIPReconcileStateNoObservedManaged &&
+		expansion.hasPlan() {
+		expansion.ReconcileState = limitPerIPReconcileStateObservedManagedState
+	}
+
+	return nil
+}
+
+func limitPerIPDecisionSummaryFromEntries(entries []limitPerIPEntryReport) *limitPerIPDecisionSummary {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	summary := &limitPerIPDecisionSummary{}
+	for _, entry := range entries {
+		if entry.Decision == nil {
+			continue
+		}
+		switch entry.Decision.Kind {
+		case limiter.DecisionNoOp:
+			summary.NoOp++
+		case limiter.DecisionApply:
+			summary.Apply++
+		case limiter.DecisionReplace:
+			summary.Replace++
+		case limiter.DecisionRemove:
+			summary.Remove++
+		}
+	}
+	if !summary.hasData() {
+		return nil
+	}
+
+	return summary
+}
+
+func limitPerIPPreviewIssuesBlocked(issues []limitPerIPPreviewIssue) bool {
+	if len(issues) == 0 {
+		return false
+	}
+
+	for _, issue := range issues {
+		if !issue.ExecutionBlocked {
+			return false
+		}
+	}
+
+	return true
+}
+
+func limitPerIPPreviewIssuesMessage(operation limitOperation, issues []limitPerIPPreviewIssue, execute bool) string {
+	details := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		message := strings.TrimSpace(issue.ExecutionNote)
+		if message == "" && issue.Err != nil {
+			message = strings.TrimSpace(issue.Err.Error())
+		}
+		if message == "" {
+			message = "unknown preparation error"
+		}
+		details = append(details, fmt.Sprintf("%s (%s)", describeLimitTarget(issue.Target), message))
+	}
+
+	state := "could not prepare"
+	if limitPerIPPreviewIssuesBlocked(issues) {
+		state = "was blocked"
+	}
+
+	return fmt.Sprintf(
+		"%s %s for %d expanded target(s): %s",
+		limitPerIPActivityLabel(operation, execute),
+		state,
+		len(issues),
+		strings.Join(details, "; "),
+	)
 }
 
 func (a App) limitState(session discovery.Session, target limitTargetSelection, options limitOptions) (limiter.Subject, *limiter.DesiredState, error) {
@@ -876,6 +1714,15 @@ func (a App) outboundSelectorDeriver() outboundMarkSelectorDeriver {
 	}
 
 	return discovery.NewOutboundMarkSelectorDeriver()
+}
+
+func (a App) sessionEvidenceProvider() sessionEvidenceProvider {
+	if a.sessionEvidence != nil {
+		return a.sessionEvidence
+	}
+
+	provider := discovery.NewXraySessionEvidenceProvider(a.discovery)
+	return provider
 }
 
 func (a App) planWithAttachments(ctx context.Context, target discovery.RuntimeTarget, action limiter.Action, scope tc.Scope) (tc.Plan, error) {
@@ -1282,9 +2129,37 @@ func orderedPolicyMatchesForReport(matches []policy.Match) []policy.Match {
 	return ordered
 }
 
+func limitTargetReportFromSelection(selection limitTargetSelection) limitTargetReport {
+	target, err := selection.policyTarget()
+	if err != nil {
+		report := limitTargetReport{
+			Kind:  selection.Kind(),
+			Value: strings.TrimSpace(selection.Value()),
+		}
+		if report.Kind == policy.TargetKindIP && strings.EqualFold(report.Value, "all") {
+			report.Value = "all"
+			report.IPAggregation = selection.NormalizedIPAggregation()
+		}
+
+		return report
+	}
+
+	report := limitTargetReport{
+		Kind:          target.Kind,
+		IPAggregation: target.NormalizedIPAggregation(),
+	}
+	if target.Kind == policy.TargetKindIP && target.All {
+		report.Value = "all"
+	} else {
+		report.Value = strings.TrimSpace(target.Value)
+	}
+
+	return report
+}
+
 func limitDirectAttachmentReportFromPlan(plan tc.Plan) limitDirectAttachmentReport {
 	report := limitDirectAttachmentReport{
-		ShapingReadiness:             tc.BindingReadinessReady,
+		ShapingReadiness:             limitShapingReadinessFromPlan(plan),
 		AttachmentReadiness:          plan.Binding.Readiness,
 		AttachmentExecutionReadiness: plan.AttachmentExecution.Readiness,
 		Confidence:                   plan.AttachmentExecution.Confidence,
@@ -1311,6 +2186,16 @@ func limitDirectAttachmentReportFromPlan(plan tc.Plan) limitDirectAttachmentRepo
 	return report
 }
 
+func limitShapingReadinessFromPlan(plan tc.Plan) tc.BindingReadiness {
+	if plan.Action.Subject.Kind == policy.TargetKindIP &&
+		plan.Action.Subject.All &&
+		plan.Action.Subject.NormalizedIPAggregation() == policy.IPAggregationModePerIP {
+		return plan.Binding.Readiness
+	}
+
+	return tc.BindingReadinessReady
+}
+
 func boolPtr(value bool) *bool {
 	return &value
 }
@@ -1320,29 +2205,42 @@ func writeLimitText(w io.Writer, report limitReport) {
 	_, _ = fmt.Fprintf(w, "Mode: %s\n", report.Mode)
 	_, _ = fmt.Fprintf(w, "Operation: %s\n", report.Operation)
 	_, _ = fmt.Fprintf(w, "Runtime: %s\n", describeLimitRuntime(report.Runtime))
-	_, _ = fmt.Fprintf(w, "Target: %s %s\n", report.TargetKind, describeLimitTargetValue(report.TargetKind, report.TargetValue))
+	writeLimitTargetText(w, report.Target)
 	if report.PolicyEvaluation != nil && report.PolicyEvaluation.hasCoexistence() {
 		writeTextSectionHeading(w, "Policy")
 		writeLimitPolicyEvaluationText(w, "", *report.PolicyEvaluation)
 	}
 	writeTextSectionHeading(w, "Requested state")
 	writeRequestedLimitText(w, report.Operation, report.Scope, report.RateBytes, report.Unlimited)
-	if report.DirectAttachment != nil && report.DirectAttachment.hasData() {
-		writeTextSectionHeading(w, "Direct attachment")
-		writeDirectAttachmentText(w, *report.DirectAttachment)
-	}
-	writeTextSectionHeading(w, "Observation")
-	writeObservationText(w, report.Observation, "Matching class-backed state")
-	writeTextSectionHeading(w, "Decision")
-	writeDecisionText(w, report.Decision)
-	if report.Plan != nil {
-		writeTextSectionHeading(w, "Plan")
-		writePlanText(w, string(report.Plan.Action.Kind), report.Operation, report.Observation.CleanupRootQDisc, report.Plan.Handles.ClassID, shouldShowPlanClassID(*report.Plan), report.Plan.Steps)
+	if report.PerIPExpansion != nil && report.PerIPExpansion.hasData() {
+		writeTextSectionHeading(w, "Per-IP expansion")
+		writeLimitPerIPExpansionText(w, report.Mode, *report.PerIPExpansion)
+	} else {
+		if report.DirectAttachment != nil && report.DirectAttachment.hasData() {
+			writeTextSectionHeading(w, "Direct attachment")
+			writeDirectAttachmentText(w, *report.DirectAttachment)
+		}
+		if report.Observation != nil {
+			writeTextSectionHeading(w, "Observation")
+			writeObservationText(w, *report.Observation, "Matching class-backed state")
+		}
+		if report.Decision != nil {
+			writeTextSectionHeading(w, "Decision")
+			writeDecisionText(w, *report.Decision)
+		}
+		if report.Plan != nil {
+			cleanupRootQDisc := false
+			if report.Observation != nil {
+				cleanupRootQDisc = report.Observation.CleanupRootQDisc
+			}
+			writeTextSectionHeading(w, "Plan")
+			writePlanText(w, describePlanAction(*report.Plan), report.Operation, cleanupRootQDisc, report.Plan.Handles.ClassID, shouldShowPlanClassID(*report.Plan), report.Plan.Steps)
+		}
 	}
 	writeTextSectionHeading(w, "Execution")
-	writeExecutionBlockedText(w, report.ExecutionBlocked, report.ExecutionNote)
+	writeExecutionStatusText(w, "", report.ExecutionBlocked, report.ExecutionNote, report.Results)
 	writeExecutionResultsSection(w, report.Results)
-	writeOutcomeSummary(w, report.Mode, report.ExecutionBlocked, report.Plan != nil, report.Plan != nil && report.Plan.NoOp, report.Results)
+	writeOutcomeSummary(w, report.Mode, report.ExecutionBlocked, report.hasPlannedWork(), report.noOp(), report.Results)
 }
 
 func writeLimitPolicyEvaluationText(w io.Writer, prefix string, report limitPolicyEvaluationReport) {
@@ -1402,6 +2300,137 @@ func writeDirectAttachmentText(w io.Writer, report limitDirectAttachmentReport) 
 			}
 		}
 	}
+}
+
+func writeLimitTargetText(w io.Writer, target limitTargetReport) {
+	_, _ = fmt.Fprintf(w, "Target: %s\n", describeLimitTarget(target))
+	if target.hasIPAggregation() {
+		_, _ = fmt.Fprintf(w, "IP aggregation: %s\n", target.IPAggregation)
+	}
+}
+
+func writeLimitPerIPExpansionText(w io.Writer, mode string, report limitPerIPExpansionReport) {
+	if report.Provider != "" {
+		_, _ = fmt.Fprintf(w, "Per-IP evidence provider: %s\n", report.Provider)
+	}
+	if report.State != "" {
+		_, _ = fmt.Fprintf(w, "Per-IP evidence state: %s\n", report.State)
+	}
+	if report.ReconcileState != "" {
+		_, _ = fmt.Fprintf(w, "Per-IP reconcile state: %s\n", report.ReconcileState)
+	}
+	if len(report.ClientIPs) == 0 {
+		_, _ = io.WriteString(w, "Visible client IPs: none\n")
+	} else {
+		_, _ = fmt.Fprintf(w, "Visible client IPs: %d\n", len(report.ClientIPs))
+		for index, clientIP := range report.ClientIPs {
+			_, _ = fmt.Fprintf(w, "  %d. %s\n", index+1, clientIP)
+		}
+	}
+	if report.Note != "" {
+		_, _ = fmt.Fprintf(w, "Per-IP expansion note: %s\n", report.Note)
+	}
+	if report.DecisionSummary != nil && report.DecisionSummary.hasData() {
+		_, _ = fmt.Fprintf(w, "Decision summary: %s\n", report.DecisionSummary.text())
+	}
+	if len(report.Entries) == 0 {
+		return
+	}
+
+	_, _ = io.WriteString(w, "Expanded targets:\n")
+	for index, entry := range report.Entries {
+		_, _ = fmt.Fprintf(w, "  %d. %s\n", index+1, describeLimitTarget(entry.Target))
+		if entry.Observation != nil {
+			_, _ = fmt.Fprintf(w, "     Observed tc state: %s\n", entry.Observation.stateLabel())
+			if entry.Observation.Error != "" {
+				_, _ = fmt.Fprintf(w, "     Observation note: %s\n", entry.Observation.Error)
+			}
+		}
+		if entry.Decision != nil && entry.Decision.Kind != "" {
+			_, _ = fmt.Fprintf(w, "     Reconcile decision: %s\n", entry.Decision.Kind)
+		}
+		if entry.Decision != nil && entry.Decision.Reason != "" {
+			_, _ = fmt.Fprintf(w, "     Decision reason: %s\n", entry.Decision.Reason)
+		}
+		_, _ = fmt.Fprintf(w, "     Observed applied states: %d\n", len(entry.Applied))
+		for appliedIndex, applied := range entry.Applied {
+			_, _ = fmt.Fprintf(w, "       %d. %s\n", appliedIndex+1, describeAppliedState(applied))
+		}
+		if entry.ReconcileInput != nil {
+			if ownerKey := reconcileOwnerKey(*entry.ReconcileInput); ownerKey != "" {
+				_, _ = fmt.Fprintf(w, "     Managed owner key: %s\n", ownerKey)
+			}
+			_, _ = fmt.Fprintf(w, "     Desired managed objects: %d\n", len(entry.ReconcileInput.Desired.Objects))
+			_, _ = fmt.Fprintf(w, "     Observed managed objects: %d\n", len(entry.ReconcileInput.Observed.Objects))
+		}
+		if entry.Plan != nil {
+			_, _ = fmt.Fprintf(w, "     Planned action: %s\n", describePerIPPlannedAction(entry))
+			if entry.Plan.Action.Kind == limiter.ActionRemove {
+				_, _ = fmt.Fprintf(
+					w,
+					"     Cleanup scope: %s\n",
+					cleanupScopeLabel(planHasStepNamed(entry.Plan.Steps, "delete-root-qdisc"), entry.Plan.Steps),
+				)
+			}
+			if shouldShowPlanClassID(*entry.Plan) && entry.Plan.Handles.ClassID != "" {
+				_, _ = fmt.Fprintf(w, "     Class ID: %s\n", entry.Plan.Handles.ClassID)
+			}
+			if len(entry.Plan.Steps) != 0 {
+				_, _ = io.WriteString(w, "     Planned commands:\n")
+				for stepIndex, step := range entry.Plan.Steps {
+					_, _ = fmt.Fprintf(
+						w,
+						"       %d. %s\n",
+						stepIndex+1,
+						strings.Join(append([]string{step.Command.Path}, step.Command.Args...), " "),
+					)
+				}
+			}
+		}
+		_, _ = fmt.Fprintf(w, "     Outcome: %s\n", describePerIPEntryOutcome(mode, entry))
+		_, _ = fmt.Fprintf(w, "     Work summary: %s\n", describePerIPEntryWork(mode, entry))
+		if entry.ExecutionNote != "" {
+			_, _ = fmt.Fprintf(w, "     Status note: %s\n", entry.ExecutionNote)
+		}
+	}
+}
+
+func describePerIPPlannedAction(entry limitPerIPEntryReport) string {
+	if entry.Plan == nil {
+		return ""
+	}
+
+	action := describePlanAction(*entry.Plan)
+	if entry.Decision != nil &&
+		entry.Decision.Kind == limiter.DecisionApply &&
+		entry.Observation != nil &&
+		entry.Observation.Matched &&
+		entry.Observation.AttachmentMatched != nil &&
+		!*entry.Observation.AttachmentMatched {
+		return action + " (reapply)"
+	}
+
+	return action
+}
+
+func describeAppliedState(applied limiter.AppliedState) string {
+	description := fmt.Sprintf("%s via %s", applied.Mode, strings.TrimSpace(applied.Driver))
+	if applied.Mode == limiter.DesiredModeLimit {
+		description += fmt.Sprintf(" (%s)", describeLimitPolicy(applied.Limits))
+	}
+	if reference := strings.TrimSpace(applied.Reference); reference != "" {
+		description += fmt.Sprintf(" [reference=%s]", reference)
+	}
+
+	return description
+}
+
+func reconcileOwnerKey(input tc.PeriodicReconcileInput) string {
+	if ownerKey := strings.TrimSpace(input.Desired.OwnerKey); ownerKey != "" {
+		return ownerKey
+	}
+
+	return strings.TrimSpace(input.Observed.OwnerKey)
 }
 
 func describeDirectAttachmentRule(rule tc.DirectAttachmentRule) string {
@@ -1496,14 +2525,12 @@ func writePlanText(w io.Writer, action string, operation limitOperation, cleanup
 	}
 }
 
-func writeExecutionBlockedText(w io.Writer, blocked bool, note string) {
-	if !blocked {
-		return
-	}
-
-	_, _ = io.WriteString(w, "Execution status: blocked\n")
-	if note != "" {
-		_, _ = fmt.Fprintf(w, "Execution note: %s\n", note)
+func describePlanAction(plan tc.Plan) string {
+	switch plan.Action.Kind {
+	case limiter.ActionReconcile:
+		return "replace"
+	default:
+		return string(plan.Action.Kind)
 	}
 }
 
@@ -1583,6 +2610,11 @@ func writeOutcomeSummary(w io.Writer, mode string, blocked bool, hasPlan bool, n
 		return
 	}
 
+	if resultsHaveFailures(results) {
+		_, _ = fmt.Fprintf(w, "Execution stopped after %d command(s).\n", len(results))
+		return
+	}
+
 	if !hasPlan {
 		_, _ = io.WriteString(w, "No tc changes are required.\n")
 		if mode == "dry-run" {
@@ -1616,10 +2648,12 @@ func outcomeLabel(mode string, blocked bool, hasPlan bool, noOp bool, results []
 	switch {
 	case blocked:
 		return "blocked"
+	case resultsHaveFailures(results):
+		return "failed"
 	case !hasPlan:
 		return "no changes"
 	case mode == "dry-run":
-		return "preview ready"
+		return "plan ready"
 	case noOp:
 		return "no changes"
 	case len(results) == 0:
@@ -1679,12 +2713,13 @@ func describePolicyTargetValue(target policy.Target) string {
 	return strings.TrimSpace(target.Value)
 }
 
-func describeLimitTargetValue(kind policy.TargetKind, value string) string {
-	if kind == policy.TargetKindIP && strings.TrimSpace(value) == "" {
-		return "all"
+func describeLimitTarget(target limitTargetReport) string {
+	value := target.displayValue()
+	if value == "" {
+		return string(target.Kind)
 	}
 
-	return strings.TrimSpace(value)
+	return fmt.Sprintf("%s %s", target.Kind, value)
 }
 
 func describePolicyEffect(effect policy.Effect) string {
@@ -1721,17 +2756,19 @@ func describeLimitRuntime(target discovery.RuntimeTarget) string {
 
 func writeLimitHelp(w io.Writer, cmd command) {
 	_, _ = fmt.Fprintf(w, "Usage:\n  %s\n\n", cmd.usage)
+	_, _ = fmt.Fprintf(w, "%s\n\n", cmd.description)
 	_, _ = io.WriteString(w, "Plan first by default. Add --execute only when the selected limiter path is concrete and the local environment can apply tc state safely.\n\n")
 	_, _ = io.WriteString(w, "Target selection:\n")
-	_, _ = io.WriteString(w, "  --ip <ip|all>                     Specific client IP or runtime-local all baseline\n")
+	_, _ = io.WriteString(w, "  --ip <ip|all>                     Specific client IP or all client IPs within the selected runtime\n")
+	_, _ = io.WriteString(w, "  --ip-aggregation shared|per_ip    Aggregation mode for --ip all (default: shared)\n")
 	_, _ = io.WriteString(w, "  --inbound <tag>                   Inbound-scoped target (concrete for one readable concrete TCP listener)\n")
 	_, _ = io.WriteString(w, "  --outbound <tag>                  Outbound-scoped target (concrete when readable Xray config proves one unique non-zero socket mark without proxy or dialer-proxy indirection)\n")
-	_, _ = io.WriteString(w, "\nExecution and output:\n")
+	_, _ = io.WriteString(w, "\nPlanning and execution:\n")
 	_, _ = io.WriteString(w, "  --device <device>                 Linux network device to plan against\n")
 	_, _ = io.WriteString(w, "  --direction upload|download       Limit direction\n")
 	_, _ = io.WriteString(w, "  --rate <bytes-per-second>         Rate in bytes per second (required unless --remove or --unlimited)\n")
-	_, _ = io.WriteString(w, "  --unlimited                       Specific-IP no-limit exception that bypasses any matching ip all baseline\n")
-	_, _ = io.WriteString(w, "  --remove                          Remove the selected target rule set instead of planning a new one\n")
+	_, _ = io.WriteString(w, "  --unlimited                       Specific IP unlimited exception that bypasses any matching shared --ip all baseline\n")
+	_, _ = io.WriteString(w, "  --remove                          Remove the selected limiter state instead of planning a new one\n")
 	_, _ = io.WriteString(w, "  --execute                         Perform real local tc execution\n")
 	_, _ = io.WriteString(w, "  --allow-missing-tc-state          Allow real execution when tc state cannot be observed first\n")
 	_, _ = io.WriteString(w, "  --format text|json                Render as text or machine-readable JSON (default: text)\n")
@@ -1743,6 +2780,8 @@ func writeLimitHelp(w io.Writer, cmd command) {
 	_, _ = io.WriteString(w, "  --container <id-or-name>          Select a Docker runtime by container name or ID prefix\n")
 	_, _ = io.WriteString(w, "\nExamples:\n")
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip all --device eth0 --direction upload --rate 1048576\n", buildinfo.BinaryName)
+	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 1048576\n", buildinfo.BinaryName)
+	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 203.0.113.4 --device eth0 --direction upload --rate 1048576\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 2001:db8::10 --device eth0 --direction download --rate 524288\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 203.0.113.4 --device eth0 --direction upload --unlimited\n", buildinfo.BinaryName)
@@ -1750,9 +2789,10 @@ func writeLimitHelp(w io.Writer, cmd command) {
 	_, _ = fmt.Fprintf(w, "  %s limit --container raylimit-xray-test --outbound proxy --device eth0 --direction upload --rate 262144 --execute\n", buildinfo.BinaryName)
 	_, _ = fmt.Fprintf(w, "  %s limit --pid 4242 --ip 203.0.113.4 --device eth0 --direction upload --remove\n", buildinfo.BinaryName)
 	_, _ = io.WriteString(w, "\nRule precedence:\n")
-	_, _ = io.WriteString(w, "  When multiple rule kinds match the same live session, RayLimit keeps the highest-precedence kind only: ip > inbound > outbound. Within IP, a specific IP target overrides an ip all baseline. At one specificity, exclude rules suppress limit rules and multiple winning limit rules merge by taking the tightest upload/download value per direction.\n")
-	_, _ = io.WriteString(w, "\nCurrent limiter status:\n")
-	_, _ = io.WriteString(w, "  --ip all installs a runtime-local baseline through a direct matchall attachment. Specific --ip rules install direct client-IP classify or pass rules that override or bypass that baseline. IPv4, IPv4-mapped IPv6, and native IPv6 stay supported within the current u32 assumption of no IPv6 extension headers for specific IP matching.\n")
+	_, _ = io.WriteString(w, "  When multiple rule kinds match the same live session, RayLimit keeps the highest-precedence kind only: ip > inbound > outbound. Within IP, a specific IP target overrides a shared --ip all baseline. At one specificity, exclude rules suppress limit rules and multiple winning limit rules merge by taking the tightest upload/download value per direction.\n")
+	_, _ = io.WriteString(w, "\nCurrent execution paths:\n")
+	_, _ = io.WriteString(w, "  --ip all currently installs a runtime-local shared baseline through a direct matchall attachment. Specific --ip rules install direct client IP classify or pass rules that override or bypass that shared baseline. IPv4, IPv4-mapped IPv6, and native IPv6 stay supported within the current u32 assumption of no IPv6 extension headers for specific IP matching.\n")
+	_, _ = io.WriteString(w, "  --ip all --ip-aggregation per_ip expands the current live client IP set through Xray-backed session evidence and reuses the specific IP direct attachment path for apply and remove. Shared root-qdisc cleanup stays conservative and only runs when the current visible client IP set proves that cleanup is safe. When live evidence is unavailable or insufficient, planning is blocked and execution is refused.\n")
 	_, _ = io.WriteString(w, "  --inbound adds concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag. Wildcard, missing, unreadable, ambiguous, or non-TCP inbound config stays conservative and blocks apply execution.\n")
 	_, _ = io.WriteString(w, "  --outbound adds concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark without proxy or dialer-proxy indirection. Unreadable config, zero or shared marks, and outbound chaining stay conservative and block concrete execution.\n")
 }

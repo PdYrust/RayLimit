@@ -21,30 +21,31 @@ In operator terms, the most specific packet-facing subject currently available i
 
 Consider a runtime where:
 
-- one IP baseline is present
+- one shared all-IP baseline is present
 - one specific IP override is present
 - one inbound limit is also relevant
 
 For traffic that matches the specific IP:
 
-- the specific IP state wins over the IP baseline
+- the specific IP state wins over the shared all-IP baseline
 - IP as a family still wins over inbound
 
 For traffic that does not match the specific IP but still belongs to that runtime:
 
-- the IP baseline can remain effective
+- the shared all-IP baseline can remain effective
 - inbound remains lower precedence
 
 ## IP Baseline Versus Specific IP
 
 Inside the IP family, specificity matters:
 
-- `--ip all` is the runtime-local baseline
-- a specific IP rule overrides that baseline
+- `--ip all` defaults to the runtime-local shared baseline
+- `--ip all --ip-aggregation per_ip` is an all-IP execution mode that expands into concrete specific-IP work from the current live evidence set
+- a specific IP rule overrides the shared baseline
 
-If a specific IP limit and an `all` baseline both match, the specific IP limit becomes effective. If a specific IP unlimited rule matches, it becomes the effective exception over the baseline.
+If a specific IP limit and a shared `all` baseline both match, the specific IP limit becomes effective. If a specific IP unlimited rule matches, it becomes the effective exception over the baseline.
 
-This is deliberate model behavior, not a side effect of generic limit merging.
+This is deliberate model behavior, not a side effect of generic limit merging. `per_ip` is not a second precedence layer. It reuses the specific-IP path across the current evidence-backed client IP set.
 
 ## Exclude And Limit Resolution
 
@@ -53,7 +54,7 @@ At one specificity level:
 - exclude rules suppress limit rules
 - multiple winning limit rules merge by taking the tightest per-direction limit
 
-That evaluator behavior matters for how RayLimit reasons about the effective state. It is not the same thing as the IP baseline-plus-override model, which is explicit.
+That evaluator behavior matters for how RayLimit reasons about the effective state. It is not the same thing as the shared-baseline-plus-override IP model, which is explicit.
 
 ## Operator Mental Model
 

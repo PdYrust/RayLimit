@@ -84,6 +84,12 @@ func (o ManagedObject) fingerprint() string {
 	}, "|")
 }
 
+// Key reports the deterministic ownership key used for ordering and set
+// comparisons across managed-state views.
+func (o ManagedObject) Key() string {
+	return o.fingerprint()
+}
+
 // ManagedStateSet captures the desired or observed managed backend objects for
 // one logical owner.
 type ManagedStateSet struct {
@@ -166,6 +172,9 @@ func DesiredManagedState(plan Plan) (ManagedStateSet, error) {
 	if plan.Action.Kind == limiter.ActionRemove || plan.Action.Kind == limiter.ActionInspect {
 		return state, nil
 	}
+	if isAllIPPerIPSubject(plan.Action.Subject) {
+		return state, nil
+	}
 
 	retainRequiresRuntimeEvidence := managedRetentionRequiresRuntimeEvidence(plan.Action.Subject.Kind)
 	state.Objects = append(state.Objects,
@@ -180,7 +189,7 @@ func DesiredManagedState(plan Plan) (ManagedStateSet, error) {
 		state.Objects = append(state.Objects, managedDirectAttachmentObject(plan.Scope, rule, retainRequiresRuntimeEvidence))
 	}
 	if plan.MarkAttachment != nil && plan.MarkAttachment.Readiness == BindingReadinessReady {
-		state.Objects = append(state.Objects, managedMarkAttachmentObjects(plan.Scope, *plan.MarkAttachment, retainRequiresRuntimeEvidence, false)...)
+		state.Objects = append(state.Objects, managedMarkAttachmentObjects(plan.Scope, *plan.MarkAttachment, retainRequiresRuntimeEvidence)...)
 	}
 	sortManagedObjects(state.Objects)
 	if err := state.Validate(); err != nil {
@@ -234,6 +243,31 @@ func ObservedManagedState(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, pla
 	}
 
 	return state, nil
+}
+
+// ReconcileInputForPlan derives the desired and observed managed state sets
+// for one concrete plan so later periodic reconcile decisions can consume one
+// validated contract.
+func ReconcileInputForPlan(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, plan Plan) (PeriodicReconcileInput, error) {
+	desired, err := DesiredManagedState(plan)
+	if err != nil {
+		return PeriodicReconcileInput{}, err
+	}
+
+	observed, err := ObservedManagedState(tcSnapshot, nftSnapshot, plan)
+	if err != nil {
+		return PeriodicReconcileInput{}, err
+	}
+
+	input := PeriodicReconcileInput{
+		Desired:  desired,
+		Observed: observed,
+	}
+	if err := input.Validate(); err != nil {
+		return PeriodicReconcileInput{}, err
+	}
+
+	return input, nil
 }
 
 // ClassifyManagedState compares desired and observed managed objects and marks
@@ -324,6 +358,9 @@ func managedOwnerKeyForSubject(subject limiter.Subject) string {
 	switch subject.Kind {
 	case policy.TargetKindIP:
 		if subject.All {
+			if isAllIPPerIPSubject(subject) {
+				return runtimeKey + "|ip|all|per_ip"
+			}
 			return runtimeKey + "|ip|all"
 		}
 		return runtimeKey + "|ip|" + strings.TrimSpace(subject.Value)
@@ -397,7 +434,7 @@ func observedDirectAttachmentObject(scope Scope, filter FilterState, retainRequi
 	}
 }
 
-func managedMarkAttachmentObjects(scope Scope, execution MarkAttachmentExecution, retainRequiresRuntimeEvidence bool, observed bool) []ManagedObject {
+func managedMarkAttachmentObjects(scope Scope, execution MarkAttachmentExecution, retainRequiresRuntimeEvidence bool) []ManagedObject {
 	objects := []ManagedObject{
 		{
 			Kind:                          ManagedObjectMarkAttachmentTable,
@@ -446,10 +483,6 @@ func managedMarkAttachmentObjects(scope Scope, execution MarkAttachmentExecution
 			},
 		)
 	}
-	if !observed {
-		return objects
-	}
-
 	return objects
 }
 

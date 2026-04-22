@@ -6,6 +6,7 @@
 
 ```bash
 raylimit limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) \
+  [--ip-aggregation shared|per_ip] \
   --device <device> \
   --direction upload|download \
   [--rate <bytes-per-second> | --unlimited | --remove] \
@@ -22,7 +23,7 @@ raylimit limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) \
 
 1. validates the selected runtime and limiter subject
 2. derives the intended desired state
-3. observes current `tc` state, and `nftables` state when needed
+3. derives any runtime evidence the selected limiter family needs and observes current `tc` state, plus `nftables` state when needed
 4. makes an explicit reconcile decision
 5. produces a plan or executes that plan when `--execute` is present
 
@@ -47,15 +48,28 @@ Every request also needs:
 - `--device <device>`
 - `--direction upload|download`
 
+`--ip-aggregation` is valid only with `--ip all`. If omitted, `--ip all` defaults to `shared`.
+
 ## Operation Modes
 
-| Mode | Flags | Meaning |
-| --- | --- | --- |
-| limit | `--rate` | create or reconcile a rate-limited state |
-| unlimited | `--unlimited` | create a specific-IP no-limit exception |
-| remove | `--remove` | remove the selected managed rule set |
+| Mode      | Flags         | Meaning                                  |
+| --------- | ------------- | ---------------------------------------- |
+| limit     | `--rate`      | create or reconcile a rate-limited state |
+| unlimited | `--unlimited` | create a specific-IP no-limit exception  |
+| remove    | `--remove`    | remove the selected managed rule set     |
 
 `--rate` must be greater than zero. `--unlimited` is valid only with a specific `--ip <ip>` target. It cannot be combined with `--rate`, `--remove`, or `--ip all`.
+
+## IP Aggregation For `--ip all`
+
+`--ip all` has two deliberate all-IP execution modes:
+
+| Target shape                 | Flags                                            | Meaning                                                              | Concrete backend truth                                                                           |
+| ---------------------------- | ------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| shared all-IP baseline       | `--ip all` or `--ip all --ip-aggregation shared` | one runtime-local shared baseline for the selected direction         | concrete through one direct `matchall` attachment                                                |
+| evidence-expanded all-IP set | `--ip all --ip-aggregation per_ip`               | expand the current live client IP set into concrete specific-IP work | concrete only after live Xray-backed client IP evidence expands into usable specific IP subjects |
+
+`per_ip` applies only to `--ip all`. It does not create an unlimited exception form. Specific unlimited behavior remains `--ip <ip> --unlimited`.
 
 ## Dry-Run, Execute, And Missing Observation
 
@@ -67,6 +81,13 @@ Dry-run is the default. Add `--execute` only when:
 
 `--allow-missing-tc-state` is more exceptional. It exists for cases where you want live execution even though RayLimit could not observe `tc` state first. It is valid only with `--execute`.
 
+For `--ip all --ip-aggregation per_ip`, RayLimit must also derive the current live client IP set before it can build concrete work:
+
+- available live evidence expands into deterministic concrete client-IP targets
+- `no_sessions` means RayLimit found no current client-IP evidence for that runtime, so there is no concrete per-IP work to plan or execute
+- unavailable or insufficient evidence blocks planning and refuses live execution
+- available evidence that yields no usable client IPs after normalization also blocks concrete per-IP work
+
 ## How To Read The Report
 
 The text output is organized into a stable operator-facing structure:
@@ -74,6 +95,18 @@ The text output is organized into a stable operator-facing structure:
 ### Requested State
 
 This confirms the direction, device, and requested limit, unlimited exception, or removal.
+
+### Per-IP Expansion
+
+When `--ip all --ip-aggregation per_ip` is selected, the report adds an explicit expansion section before the concrete per-target details. It shows:
+
+- the per-IP evidence state
+- the per-IP reconcile state
+- the expanded client IP list
+- a grouped decision summary
+- one concrete entry per expanded target
+
+Each expanded target then carries its own observation, decision, plan, and execution outcome.
 
 ### Observation
 
@@ -102,23 +135,41 @@ The plan section shows the action kind and the commands RayLimit would run or di
 
 ### Execution And Outcome
 
-These sections tell you whether execution was blocked, whether commands were actually executed, and whether the result was preview-ready, no changes, blocked, or executed.
+These sections tell you whether execution was blocked, whether commands were actually executed, and whether the result was plan-ready, no changes, blocked, executed, or failed.
 
 ## High-Value Examples
 
-Runtime-local IP baseline:
+Runtime-local shared all-IP baseline (default):
 
 ```bash
 sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096
 ```
 
-Specific per-IP override:
+Runtime-local shared all-IP baseline, explicit:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation shared --device eth0 --direction upload --rate 4096
+```
+
+Evidence-expanded `per_ip` planning:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096
+```
+
+Evidence-expanded `per_ip` remove:
+
+```bash
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --remove
+```
+
+Specific IP override:
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction upload --rate 2048
 ```
 
-Specific per-IP unlimited exception:
+Specific IP unlimited exception:
 
 ```bash
 sudo raylimit limit --pid 1234 --ip 203.0.113.20 --device eth0 --direction upload --unlimited
@@ -145,7 +196,7 @@ sudo raylimit limit --pid 1234 --ip 203.0.113.10 --device eth0 --direction uploa
 JSON output for automation:
 
 ```bash
-sudo raylimit limit --pid 1234 --ip all --device eth0 --direction upload --rate 4096 --format json
+sudo raylimit limit --pid 1234 --ip all --ip-aggregation per_ip --device eth0 --direction upload --rate 4096 --format json
 ```
 
 ## When To Stop Instead Of Executing

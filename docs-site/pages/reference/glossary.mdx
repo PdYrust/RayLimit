@@ -14,19 +14,23 @@ The product-facing identity RayLimit uses to select traffic: `ip`, `inbound`, or
 
 ## Subject
 
-The concrete runtime-scoped object a limiter request refers to, such as one runtime-local IP baseline, one specific IP, one inbound tag, or one outbound tag.
+The concrete runtime-scoped object a limiter request refers to, such as one runtime-local shared all-IP baseline, one runtime-local evidence-expanded all-IP selection, one specific IP, one inbound tag, or one outbound tag.
 
 ## Baseline
 
-For the IP family, the runtime-local default created by `--ip all --rate ...`.
+For the IP family, the runtime-local shared all-IP default created by `--ip all --rate ...` or explicitly by `--ip all --ip-aggregation shared --rate ...`.
+
+## IP Aggregation
+
+For `--ip all`, the all-IP mode selected by `--ip-aggregation`. `shared` is the default. `per_ip` expands the current live client IP evidence into concrete specific-IP work.
 
 ## Override
 
-For the IP family, a specific `--ip <ip> --rate ...` rule that takes priority over the runtime-local baseline for that address.
+For the IP family, a specific `--ip <ip> --rate ...` rule that takes priority over the runtime-local shared baseline for that address.
 
 ## Unlimited Exception
 
-For the IP family, a specific `--ip <ip> --unlimited` rule that bypasses the runtime-local baseline for that address.
+For the IP family, a specific `--ip <ip> --unlimited` rule that bypasses the runtime-local shared baseline for that address.
 
 ## Dry-Run
 

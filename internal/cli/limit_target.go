@@ -14,16 +14,27 @@ type limitTargetSelection struct {
 	IP       string
 	Inbound  string
 	Outbound string
+
+	IPAggregation policy.IPAggregationMode
 }
 
 func (s limitTargetSelection) Validate() error {
 	kind, value, count := s.selected()
+	aggregation := strings.TrimSpace(string(s.IPAggregation))
 	switch count {
 	case 0:
 		return errors.New("select one limit target with --ip, --inbound, or --outbound")
 	case 1:
 	default:
 		return errors.New("select exactly one limit target with --ip, --inbound, or --outbound")
+	}
+	if aggregation != "" {
+		if !s.IPAggregation.Valid() {
+			return fmt.Errorf("invalid --ip-aggregation value %q", s.IPAggregation)
+		}
+		if kind != policy.TargetKindIP || !strings.EqualFold(value, "all") {
+			return errors.New("--ip-aggregation is only valid with --ip all")
+		}
 	}
 
 	switch kind {
@@ -67,10 +78,23 @@ func (s limitTargetSelection) apply(session *discovery.Session) {
 	}
 }
 
+func (s limitTargetSelection) NormalizedIPAggregation() policy.IPAggregationMode {
+	if s.Kind() != policy.TargetKindIP || !strings.EqualFold(s.Value(), "all") {
+		return ""
+	}
+
+	if strings.TrimSpace(string(s.IPAggregation)) == "" {
+		return policy.IPAggregationModeShared
+	}
+
+	return s.IPAggregation
+}
+
 func (s limitTargetSelection) policyTarget() (policy.Target, error) {
 	target := policy.Target{Kind: s.Kind()}
 	if target.Kind == policy.TargetKindIP && strings.EqualFold(s.Value(), "all") {
 		target.All = true
+		target.IPAggregation = s.NormalizedIPAggregation()
 	} else {
 		target.Value = s.Value()
 	}

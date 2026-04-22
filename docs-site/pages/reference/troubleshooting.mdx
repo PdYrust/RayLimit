@@ -58,9 +58,19 @@ It does not work with:
 - `--inbound`
 - `--outbound`
 
-## IP Baseline Does Not Behave Like Host-Global State
+## Shared All-IP Baseline Does Not Behave Like Host-Global State
 
-That is expected. `--ip all` is runtime-local. If another runtime still has unshaped traffic, that does not mean the baseline failed. It means the other runtime is outside the selected subject.
+That is expected. `--ip all` in its default `shared` mode is runtime-local. If another runtime still has unshaped traffic, that does not mean the shared baseline failed. It means the other runtime is outside the selected subject.
+
+## `per_ip` Has No Concrete Work
+
+When `--ip all --ip-aggregation per_ip` does not produce concrete per-IP work, the report is usually telling you one of these:
+
+- live client IP evidence is unavailable or insufficient, so planning is blocked and execution is refused
+- the runtime currently has `no_sessions`, so there is no concrete per-IP work to apply or remove
+- live evidence was available, but no usable client IPs remained after normalization
+
+Read the per-IP evidence state and per-IP reconcile state before changing the command. `per_ip` depends on the current live client IP set. It does not guess unseen clients and it does not fall back silently to the shared baseline.
 
 ## Remove Does Less Than Expected
 
@@ -68,8 +78,8 @@ Remove is conservative by design. RayLimit removes only the managed state it can
 
 For IP in particular:
 
-- removing a specific IP does not remove the baseline
-- removing the baseline does not imply removal of every specific IP rule on other subjects
+- removing a specific IP does not remove the shared baseline
+- removing the shared baseline does not imply removal of every specific IP rule on other subjects
 
 ## A Repeated Command Does Not Execute Again
 

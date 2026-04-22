@@ -18,6 +18,23 @@ const (
 	TargetKindOutbound TargetKind = "outbound"
 )
 
+// IPAggregationMode identifies how an all-IP target should aggregate traffic.
+type IPAggregationMode string
+
+const (
+	IPAggregationModeShared IPAggregationMode = "shared"
+	IPAggregationModePerIP  IPAggregationMode = "per_ip"
+)
+
+func (m IPAggregationMode) Valid() bool {
+	switch m {
+	case IPAggregationModeShared, IPAggregationModePerIP:
+		return true
+	default:
+		return false
+	}
+}
+
 func (k TargetKind) Valid() bool {
 	switch k {
 	case TargetKindIP, TargetKindInbound, TargetKindOutbound:
@@ -94,6 +111,12 @@ type Policy struct {
 	Effect Effect      `json:"effect,omitempty"`
 	Target Target      `json:"target"`
 	Limits LimitPolicy `json:"limits,omitempty"`
+}
+
+func (p Policy) normalized() Policy {
+	normalized := p
+	normalized.Target = normalized.Target.normalized()
+	return normalized
 }
 
 // Validate checks that a policy definition is internally consistent.
@@ -203,9 +226,36 @@ func (r RateLimit) Validate() error {
 
 // Target identifies what a policy should match.
 type Target struct {
-	Kind  TargetKind `json:"kind"`
-	All   bool       `json:"all,omitempty"`
-	Value string     `json:"value,omitempty"`
+	Kind          TargetKind        `json:"kind"`
+	All           bool              `json:"all,omitempty"`
+	Value         string            `json:"value,omitempty"`
+	IPAggregation IPAggregationMode `json:"ip_aggregation,omitempty"`
+}
+
+// NormalizedIPAggregation reports the effective aggregation mode for an all-IP
+// target. An unspecified all-IP target defaults to shared.
+func (t Target) NormalizedIPAggregation() IPAggregationMode {
+	if t.Kind != TargetKindIP || !t.All {
+		return ""
+	}
+
+	if strings.TrimSpace(string(t.IPAggregation)) == "" {
+		return IPAggregationModeShared
+	}
+
+	return t.IPAggregation
+}
+
+func (t Target) normalized() Target {
+	normalized := t
+	if normalized.Kind == TargetKindIP && normalized.All {
+		normalized.Value = ""
+		normalized.IPAggregation = normalized.NormalizedIPAggregation()
+		return normalized
+	}
+
+	normalized.IPAggregation = ""
+	return normalized
 }
 
 // Validate checks that a policy target is internally consistent.
@@ -215,20 +265,29 @@ func (t Target) Validate() error {
 	}
 
 	value := strings.TrimSpace(t.Value)
+	aggregation := strings.TrimSpace(string(t.IPAggregation))
 	switch t.Kind {
 	case TargetKindInbound, TargetKindOutbound:
 		if t.All {
 			return fmt.Errorf("%s target cannot use all", t.Kind)
 		}
+		if aggregation != "" {
+			return fmt.Errorf("%s target cannot use ip_aggregation", t.Kind)
+		}
 		if value == "" {
 			return fmt.Errorf("%s target requires a value", t.Kind)
 		}
 	case TargetKindIP:
+		if aggregation != "" && !t.IPAggregation.Valid() {
+			return fmt.Errorf("invalid ip aggregation mode %q", t.IPAggregation)
+		}
 		switch {
 		case t.All && value != "":
 			return errors.New("ip target cannot combine all with a specific value")
 		case !t.All && value == "":
 			return errors.New("ip target requires a value")
+		case !t.All && aggregation != "":
+			return errors.New("specific ip target cannot use ip_aggregation")
 		case t.All:
 			return nil
 		}
