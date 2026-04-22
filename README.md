@@ -18,15 +18,15 @@ RayLimit is a Linux CLI for discovering Xray runtimes, inspecting runtime state,
 
 The implemented speed limiter families are validated and actively developed. Their concrete execution scopes depend on the runtime evidence and selectors available on the host.
 
-Current public release line: `v0.2.0-beta`.
+Current public release line: `v0.3.0-beta`.
 
 ## Install
 
 From a release package:
 
 ```bash
-tar -xzf raylimit_v0.2.0-beta_linux_amd64.tar.gz
-cd raylimit_v0.2.0-beta_linux_amd64
+tar -xzf raylimit_v0.3.0-beta_linux_amd64.tar.gz
+cd raylimit_v0.3.0-beta_linux_amd64
 sudo ./scripts/install.sh
 ```
 

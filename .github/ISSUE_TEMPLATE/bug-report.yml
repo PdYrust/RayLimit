@@ -70,7 +70,7 @@ body:
       label: Environment
       description: Include version, Linux distribution, kernel, and whether you ran from a release install or from source.
       placeholder: |
-        RayLimit: v0.2.0-beta
+        RayLimit: v0.3.0-beta
         Install path: release package
         Linux: Debian 12
         Kernel: 6.1.x

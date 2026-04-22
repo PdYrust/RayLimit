@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag with a leading v, for example v0.2.0-beta
+        description: Release tag with a leading v, for example v0.3.0-beta
         required: true
         type: string
       title:
-        description: Release title, for example RayLimit v0.2.0-beta
+        description: Release title, for example RayLimit v0.3.0-beta
         required: true
         type: string
       prerelease:
@@ -68,7 +68,7 @@ jobs:
           title="${{ inputs.title }}"
 
           if [[ -z "$tag" || "$tag" != v* ]]; then
-            echo "tag must start with v, for example v0.2.0-beta" >&2
+            echo "tag must start with v, for example v0.3.0-beta" >&2
             exit 1
           fi
 

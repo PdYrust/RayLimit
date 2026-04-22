@@ -1,7 +1,7 @@
 {
   "name": "raylimit-docs-site",
   "private": true,
-  "version": "0.2.0-beta",
+  "version": "0.3.0-beta",
   "scripts": {
     "dev": "next dev",
     "build": "GHPAGES=1 next build && next export -o out/",
