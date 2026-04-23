@@ -1,5 +1,7 @@
 import { DocsThemeConfig, useConfig } from 'nextra-theme-docs';
 import { useRouter } from 'next/router';
+import { useTheme } from 'next-themes';
+import { useEffect, useState } from 'react';
 
 import brandAssets from './brand-assets.json';
 
@@ -38,23 +40,36 @@ function brandAssetPaths(basePath: string) {
 
 function BrandLogoMark() {
   const { basePath = '' } = useRouter();
+  const { resolvedTheme } = useTheme();
+  const [isThemeReady, setIsThemeReady] = useState(false);
   const assetPaths = brandAssetPaths(basePath);
+  const isDarkTheme = isThemeReady && resolvedTheme === 'dark';
+
+  useEffect(() => {
+    setIsThemeReady(true);
+  }, []);
 
   return (
-    <div aria-hidden="true" className="nx-relative nx-h-8 nx-w-8 nx-shrink-0">
+    <div aria-hidden="true" className="nx-relative nx-h-10 nx-w-10 nx-shrink-0">
       <img
         alt=""
-        className="nx-absolute nx-inset-0 nx-block dark:nx-hidden"
-        height="32"
+        className="nx-absolute nx-inset-0 nx-block nx-h-10 nx-w-10 dark:nx-hidden"
+        height="40"
         src={assetPaths.icons.light}
-        width="32"
+        style={{
+          display: isThemeReady ? (isDarkTheme ? 'none' : 'block') : undefined,
+        }}
+        width="40"
       />
       <img
         alt=""
-        className="nx-absolute nx-inset-0 nx-hidden dark:nx-block"
-        height="32"
+        className="nx-absolute nx-inset-0 nx-hidden nx-h-10 nx-w-10 dark:nx-block"
+        height="40"
         src={assetPaths.icons.dark}
-        width="32"
+        style={{
+          display: isThemeReady ? (isDarkTheme ? 'block' : 'none') : undefined,
+        }}
+        width="40"
       />
     </div>
   );
@@ -62,11 +77,15 @@ function BrandLogoMark() {
 
 function BrandLogo() {
   return (
-    <div className="nx-flex nx-items-center nx-gap-3">
+    <div className="nx-flex nx-items-center nx-gap-4">
       <BrandLogoMark />
-      <div className="nx-flex nx-flex-col">
-        <span className="nx-font-bold max-[500px]:text-lg min-[500px]:text-xl">RayLimit</span>
-        <span className="nx-text-xs nx-text-gray-500 dark:nx-text-gray-400">Documentation</span>
+      <div className="nx-flex nx-flex-col nx-gap-0.5">
+        <span className="nx-font-bold nx-leading-none max-[500px]:text-lg min-[500px]:text-xl">
+          RayLimit
+        </span>
+        <span className="nx-text-xs nx-leading-4 nx-text-gray-500 dark:nx-text-gray-400">
+          Documentation
+        </span>
       </div>
     </div>
   );
