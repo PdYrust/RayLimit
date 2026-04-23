@@ -82,6 +82,18 @@ async function removeObsoletePublicAssets() {
     'raylimit-icon-white-',
   ];
   const publicEntries = await readdir(publicDir, { withFileTypes: true });
+  const currentBrandFiles = new Set(
+    [
+      sitePngOutputs.appleTouchIcon,
+      sitePngOutputs.favicon,
+      sitePngOutputs.manifest,
+      sitePngOutputs.manifestIcons.large,
+      sitePngOutputs.manifestIcons.small,
+      sitePngOutputs.socialPreview,
+      brandIconVariants.dark.svgPublicCopy,
+      brandIconVariants.light.svgPublicCopy,
+    ].map((filePath) => path.resolve(filePath)),
+  );
 
   await Promise.all(
     publicEntries.flatMap((entry) => {
@@ -97,6 +109,24 @@ async function removeObsoletePublicAssets() {
 
       if (isLegacyFile || isVersionedGeneratedFile) {
         return unlink(filePath);
+      }
+
+      return [];
+    }),
+  );
+
+  const currentBrandEntries = await readdir(brandPublicDir, { withFileTypes: true });
+
+  await Promise.all(
+    currentBrandEntries.flatMap((entry) => {
+      if (!entry.isFile()) {
+        return [];
+      }
+
+      const filePath = path.resolve(path.join(brandPublicDir, entry.name));
+
+      if (!currentBrandFiles.has(filePath)) {
+        return rm(filePath, { force: true });
       }
 
       return [];
@@ -164,37 +194,6 @@ function svgDataUri(source) {
   return `data:image/svg+xml;base64,${Buffer.from(source).toString('base64')}`;
 }
 
-function faviconSvg() {
-  return Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1000">
-      <style>
-        :root { --icon-color: #000000; }
-        @media (prefers-color-scheme: dark) {
-          :root { --icon-color: #ffffff; }
-        }
-        .brand-fill { fill: var(--icon-color); }
-        .brand-stroke {
-          fill: none;
-          stroke: var(--icon-color);
-          stroke-linecap: round;
-          stroke-linejoin: round;
-          stroke-width: 54;
-        }
-      </style>
-      <g class="brand-fill" transform="translate(280 120) scale(0.72)">
-        <polygon points="530,530 900,530 650,650 530,1000" />
-        <polygon points="470,530 470,900 350,650 0,530" />
-        <polygon points="530,470 530,100 650,350 1000,470" />
-        <polygon points="470,470 100,470 350,350 470,0" />
-      </g>
-      <g class="brand-stroke">
-        <path d="M248 88C184 88 160 126 160 202V324C160 395 126 443 84 470C126 497 160 545 160 616V798C160 874 184 912 248 912" />
-        <path d="M1032 88C1096 88 1120 126 1120 202V324C1120 395 1154 443 1196 470C1154 497 1120 545 1120 616V798C1120 874 1096 912 1032 912" />
-      </g>
-    </svg>`,
-  );
-}
-
 function ogPreviewSvg(iconSource) {
   const iconUri = svgDataUri(iconSource);
 
@@ -240,7 +239,10 @@ async function buildSiteIcons() {
 }
 
 async function buildFavicon() {
-  await writeFile(sitePngOutputs.favicon, faviconSvg());
+  await sharp(brandIconVariants.light.pngOutput)
+    .resize(64, 64, { fit: 'cover', kernel: sharp.kernel.lanczos3 })
+    .png()
+    .toFile(sitePngOutputs.favicon);
 }
 
 async function buildManifest() {

@@ -2,7 +2,7 @@
   "namespace": "brand/raylimit-docs",
   "files": {
     "appleTouchIcon": "apple-touch-icon.png",
-    "favicon": "raylimit-favicon.svg",
+    "favicon": "raylimit-favicon.png",
     "icons": {
       "dark": "raylimit-icon-white.svg",
       "light": "raylimit-icon.svg"

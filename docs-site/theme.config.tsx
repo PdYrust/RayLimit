@@ -36,28 +36,34 @@ function brandAssetPaths(basePath: string) {
   };
 }
 
-function BrandLogo() {
+function BrandLogoMark() {
   const { basePath = '' } = useRouter();
-  const brandAssets = brandAssetPaths(basePath);
+  const assetPaths = brandAssetPaths(basePath);
 
   return (
+    <div aria-hidden="true" className="nx-relative nx-h-8 nx-w-8 nx-shrink-0">
+      <img
+        alt=""
+        className="nx-absolute nx-inset-0 nx-block dark:nx-hidden"
+        height="32"
+        src={assetPaths.icons.light}
+        width="32"
+      />
+      <img
+        alt=""
+        className="nx-absolute nx-inset-0 nx-hidden dark:nx-block"
+        height="32"
+        src={assetPaths.icons.dark}
+        width="32"
+      />
+    </div>
+  );
+}
+
+function BrandLogo() {
+  return (
     <div className="nx-flex nx-items-center nx-gap-3">
-      <div className="nx-relative nx-h-8 nx-w-8 nx-shrink-0">
-        <img
-          alt="RayLimit"
-          className="nx-block dark:nx-hidden"
-          height="32"
-          src={brandAssets.icons.light}
-          width="32"
-        />
-        <img
-          alt="RayLimit"
-          className="nx-hidden dark:nx-block"
-          height="32"
-          src={brandAssets.icons.dark}
-          width="32"
-        />
-      </div>
+      <BrandLogoMark />
       <div className="nx-flex nx-flex-col">
         <span className="nx-font-bold max-[500px]:text-lg min-[500px]:text-xl">RayLimit</span>
         <span className="nx-text-xs nx-text-gray-500 dark:nx-text-gray-400">Documentation</span>
@@ -120,7 +126,7 @@ const config: DocsThemeConfig = {
     const canonicalPath = currentPath === '/' ? '' : currentPath;
     const canonicalUrl = `${SITE_URL}${canonicalPath}`;
     const pageTitle = title && route !== '/' ? `${title} – RayLimit Documentation` : SITE_TITLE;
-    const brandAssets = brandAssetPaths(basePath);
+    const assetPaths = brandAssetPaths(basePath);
 
     return (
       <>
@@ -150,9 +156,9 @@ const config: DocsThemeConfig = {
         <meta content={SOCIAL_PREVIEW_IMAGE} name="twitter:image" />
         <meta content={SOCIAL_PREVIEW_ALT} name="twitter:image:alt" />
         <meta content="RayLimit" name="apple-mobile-web-app-title" />
-        <link href={brandAssets.favicon} rel="icon" sizes="any" type="image/svg+xml" />
-        <link href={brandAssets.appleTouchIcon} rel="apple-touch-icon" />
-        <link href={brandAssets.manifest} rel="manifest" />
+        <link href={assetPaths.favicon} rel="icon" sizes="64x64" type="image/png" />
+        <link href={assetPaths.appleTouchIcon} rel="apple-touch-icon" />
+        <link href={assetPaths.manifest} rel="manifest" />
       </>
     );
   },
