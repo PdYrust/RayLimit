@@ -47,35 +47,22 @@ function BrandLogoMark() {
   const { resolvedTheme } = useTheme();
   const [isThemeReady, setIsThemeReady] = useState(false);
   const assetPaths = brandAssetPaths();
-  const isDarkTheme = isThemeReady && resolvedTheme === 'dark';
+  const logoSrc =
+    isThemeReady && resolvedTheme === 'dark' ? assetPaths.icons.dark : assetPaths.icons.light;
 
   useEffect(() => {
     setIsThemeReady(true);
   }, []);
 
   return (
-    <div aria-hidden="true" className="nx-relative nx-h-10 nx-w-10 nx-shrink-0">
-      <img
-        alt=""
-        className="nx-absolute nx-inset-0 nx-block nx-h-10 nx-w-10 dark:nx-hidden"
-        height="40"
-        src={assetPaths.icons.light}
-        style={{
-          display: isThemeReady ? (isDarkTheme ? 'none' : 'block') : undefined,
-        }}
-        width="40"
-      />
-      <img
-        alt=""
-        className="nx-absolute nx-inset-0 nx-hidden nx-h-10 nx-w-10 dark:nx-block"
-        height="40"
-        src={assetPaths.icons.dark}
-        style={{
-          display: isThemeReady ? (isDarkTheme ? 'block' : 'none') : undefined,
-        }}
-        width="40"
-      />
-    </div>
+    <img
+      alt=""
+      aria-hidden="true"
+      className="nx-block nx-h-10 nx-w-10 nx-shrink-0"
+      height="40"
+      src={logoSrc}
+      width="40"
+    />
   );
 }
 
