@@ -3,10 +3,17 @@
   "private": true,
   "version": "0.3.0-beta",
   "scripts": {
+    "assets": "node scripts/generate-brand-assets.mjs",
+    "build": "next build",
+    "build:static": "GHPAGES=1 next build",
     "dev": "next dev",
-    "build": "GHPAGES=1 next build && next export -o out/",
+    "format": "prettier --write \"**/*.{js,ts,tsx,json,md,mdx}\" \"../README.md\" \"../.github/workflows/docs.yml\"",
+    "format:check": "prettier --check \"**/*.{js,ts,tsx,json,md,mdx}\" \"../README.md\" \"../.github/workflows/docs.yml\"",
+    "prebuild": "npm run assets",
+    "prebuild:static": "npm run assets",
+    "predev": "npm run assets",
     "start": "next start",
-  "format": "prettier --write \"**/*.{js,ts,tsx,json,md,mdx}\""
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "next": "^13.5.6",
@@ -20,13 +27,14 @@
     "autoprefixer": "^10.4.14",
     "postcss": "^8.4.21",
     "prettier": "^3.3.3",
+    "sharp": "^0.34.5",
     "tailwindcss": "^3.3.1",
     "typescript": "^5.5.0"
   },
   "prettier": {
     "tabWidth": 2,
-    "indent_style": "space",
-    "end_of_line": "lf",
+    "useTabs": false,
+    "endOfLine": "lf",
     "semi": true,
     "singleQuote": true,
     "jsxSingleQuote": false,

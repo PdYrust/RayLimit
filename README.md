@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/logo/raylimit-icon.svg" alt="RayLimit icon" width="144">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/raylimit-icon-white.svg">
+    <img src="assets/logo/raylimit-icon.svg" alt="RayLimit icon" width="144">
+  </picture>
 </p>
 
 <h1 align="center">RayLimit</h1>
@@ -39,11 +42,11 @@ sudo ./scripts/install.sh
 
 ## Current Speed Limiter Families
 
-| Speed limiter | Current release truth |
-| --- | --- |
-| `ip` | Validated and concrete for a runtime-local `--ip all` baseline, specific per-IP overrides, and specific per-IP unlimited exceptions, including native IPv6 within the current attachment assumptions |
-| `inbound` | Validated and concrete when readable runtime configuration proves one concrete TCP listener for the selected inbound tag |
-| `outbound` | Validated and concrete when readable runtime configuration proves one unique non-zero outbound socket mark without proxy indirection |
+| Speed limiter | Current release truth                                                                                                                                                                                |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ip`          | Validated and concrete for a runtime-local `--ip all` baseline, specific per-IP overrides, and specific per-IP unlimited exceptions, including native IPv6 within the current attachment assumptions |
+| `inbound`     | Validated and concrete when readable runtime configuration proves one concrete TCP listener for the selected inbound tag                                                                             |
+| `outbound`    | Validated and concrete when readable runtime configuration proves one unique non-zero outbound socket mark without proxy indirection                                                                 |
 
 ## Common Commands
 
@@ -60,8 +63,8 @@ raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --ra
 
 ## Project
 
-- Creator: YrustPd
-- Repository: https://github.com/PdYrust/RayLimit
+-   Creator: YrustPd
+-   Repository: https://github.com/PdYrust/RayLimit
 
 ## License
 

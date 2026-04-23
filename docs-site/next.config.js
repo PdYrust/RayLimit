@@ -16,6 +16,7 @@ module.exports = withNextra({
   reactStrictMode: true,
   ...(isGhPages && {
     basePath: `/${repoName}`,
+    output: 'export',
     assetPrefix: `/${repoName}/`,
     trailingSlash: true,
   }),

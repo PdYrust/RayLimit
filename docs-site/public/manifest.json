@@ -1,8 +1,8 @@
 {
   "name": "RayLimit Documentation",
   "short_name": "RayLimit Docs",
-  "theme_color": "#0a1726",
-  "background_color": "#0a1726",
+  "theme_color": "#ffffff",
+  "background_color": "#ffffff",
   "display": "standalone",
   "scope": ".",
   "start_url": ".",
