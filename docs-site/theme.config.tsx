@@ -1,33 +1,33 @@
 import { DocsThemeConfig, useConfig } from 'nextra-theme-docs';
 import { useRouter } from 'next/router';
 
+import brandAssets from './brand-assets.json';
+
 const SITE_TITLE = 'RayLimit Documentation';
 const SITE_DESCRIPTION = 'Operator-grade traffic shaping documentation for Xray runtimes on Linux.';
 const SITE_URL = 'https://pdyrust.github.io/RayLimit';
 const REPOSITORY_URL = 'https://github.com/PdYrust/RayLimit';
 const TELEGRAM_URL = 'https://t.me/PdYrust';
+const SOCIAL_PREVIEW_ALT = 'RayLimit documentation preview';
+const SOCIAL_PREVIEW_HEIGHT = 630;
+const SOCIAL_PREVIEW_TYPE = 'image/png';
+const SOCIAL_PREVIEW_WIDTH = 1200;
 const BRAND_SURFACES = {
   dark: '#000000',
   light: '#ffffff',
 } as const;
-const BRAND_ASSET_FILES = {
-  appleTouchIcon: '/apple-touch-icon.png',
-  icons: {
-    dark: '/raylimit-icon-white.svg',
-    light: '/raylimit-icon.svg',
-  },
-  manifest: '/manifest.json',
-  previewImage: '/og-preview.png',
-} as const;
-const SOCIAL_PREVIEW_IMAGE = `${SITE_URL}${BRAND_ASSET_FILES.previewImage}`;
+const BRAND_ASSET_NAMESPACE = brandAssets.namespace;
+const BRAND_ASSET_FILES = brandAssets.files;
+const SOCIAL_PREVIEW_IMAGE = `${SITE_URL}/${BRAND_ASSET_NAMESPACE}/${BRAND_ASSET_FILES.previewImage}`;
 
-function assetPath(basePath: string, path: string): string {
-  return `${basePath || ''}${path}`;
+function assetPath(basePath: string, fileName: string): string {
+  return `${basePath || ''}/${BRAND_ASSET_NAMESPACE}/${fileName}`;
 }
 
 function brandAssetPaths(basePath: string) {
   return {
     appleTouchIcon: assetPath(basePath, BRAND_ASSET_FILES.appleTouchIcon),
+    favicon: assetPath(basePath, BRAND_ASSET_FILES.favicon),
     icons: {
       dark: assetPath(basePath, BRAND_ASSET_FILES.icons.dark),
       light: assetPath(basePath, BRAND_ASSET_FILES.icons.light),
@@ -104,11 +104,6 @@ const config: DocsThemeConfig = {
       type: 'website',
       locale: 'en_US',
       siteName: 'RayLimit Documentation',
-      images: [
-        {
-          url: SOCIAL_PREVIEW_IMAGE,
-        },
-      ],
       description: SITE_DESCRIPTION,
     },
   }),
@@ -146,23 +141,16 @@ const config: DocsThemeConfig = {
         />
         <link href={canonicalUrl} rel="canonical" />
         <meta content={canonicalUrl} property="og:url" />
+        <meta content={SOCIAL_PREVIEW_IMAGE} property="og:image" />
+        <meta content={SOCIAL_PREVIEW_TYPE} property="og:image:type" />
+        <meta content={`${SOCIAL_PREVIEW_WIDTH}`} property="og:image:width" />
+        <meta content={`${SOCIAL_PREVIEW_HEIGHT}`} property="og:image:height" />
         <meta content="summary_large_image" name="twitter:card" />
         <meta content={pageTitle} name="twitter:title" />
         <meta content={SOCIAL_PREVIEW_IMAGE} name="twitter:image" />
+        <meta content={SOCIAL_PREVIEW_ALT} name="twitter:image:alt" />
         <meta content="RayLimit" name="apple-mobile-web-app-title" />
-        <link
-          href={brandAssets.icons.light}
-          media="(prefers-color-scheme: light)"
-          rel="icon"
-          type="image/svg+xml"
-        />
-        <link
-          href={brandAssets.icons.dark}
-          media="(prefers-color-scheme: dark)"
-          rel="icon"
-          type="image/svg+xml"
-        />
-        <link href={brandAssets.icons.light} rel="icon" type="image/svg+xml" />
+        <link href={brandAssets.favicon} rel="icon" sizes="any" type="image/svg+xml" />
         <link href={brandAssets.appleTouchIcon} rel="apple-touch-icon" />
         <link href={brandAssets.manifest} rel="manifest" />
       </>

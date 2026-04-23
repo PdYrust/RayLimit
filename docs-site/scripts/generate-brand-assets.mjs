@@ -1,4 +1,5 @@
-import { copyFile, mkdir, readFile } from 'node:fs/promises';
+import brandAssets from '../brand-assets.json' with { type: 'json' };
+import { copyFile, mkdir, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,29 +10,45 @@ const docsSiteDir = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(docsSiteDir, '..');
 const sourceDir = path.join(repoRoot, 'assets', 'logo');
 const publicDir = path.join(docsSiteDir, 'public');
+const brandAssetNamespace = brandAssets.namespace;
+const brandAssetFiles = brandAssets.files;
+const brandPublicDir = path.join(publicDir, ...brandAssetNamespace.split('/'));
+const brandNamespaceRootDir = path.join(publicDir, 'brand');
+const currentBrandSlug = path.basename(brandPublicDir);
 
 const brandIconVariants = {
   dark: {
     background: '#000000',
     pngOutput: path.join(sourceDir, 'raylimit-icon-white.png'),
-    svgPublicCopy: path.join(publicDir, 'raylimit-icon-white.svg'),
+    svgPublicCopy: path.join(brandPublicDir, brandAssetFiles.icons.dark),
     svgSource: path.join(sourceDir, 'raylimit-icon-white.svg'),
   },
   light: {
     background: '#ffffff',
     pngOutput: path.join(sourceDir, 'raylimit-icon.png'),
-    svgPublicCopy: path.join(publicDir, 'raylimit-icon.svg'),
+    svgPublicCopy: path.join(brandPublicDir, brandAssetFiles.icons.light),
     svgSource: path.join(sourceDir, 'raylimit-icon.svg'),
   },
 };
 const sitePngOutputs = {
-  appleTouchIcon: path.join(publicDir, 'apple-touch-icon.png'),
+  appleTouchIcon: path.join(brandPublicDir, brandAssetFiles.appleTouchIcon),
+  favicon: path.join(brandPublicDir, brandAssetFiles.favicon),
+  manifest: path.join(brandPublicDir, brandAssetFiles.manifest),
   manifestIcons: {
-    large: path.join(publicDir, 'icon-512.png'),
-    small: path.join(publicDir, 'icon-192.png'),
+    large: path.join(brandPublicDir, brandAssetFiles.manifestIcons.large),
+    small: path.join(brandPublicDir, brandAssetFiles.manifestIcons.small),
   },
-  socialPreview: path.join(publicDir, 'og-preview.png'),
+  socialPreview: path.join(brandPublicDir, brandAssetFiles.previewImage),
 };
+const legacyPublicFiles = [
+  'apple-touch-icon.png',
+  'icon-192.png',
+  'icon-512.png',
+  'manifest.json',
+  'og-preview.png',
+  'raylimit-icon-white.svg',
+  'raylimit-icon.svg',
+];
 
 const iconCanvasSize = 512;
 const iconContentSize = 408;
@@ -50,6 +67,56 @@ function roundedMask(size, radius) {
 async function ensureDirectories() {
   await mkdir(sourceDir, { recursive: true });
   await mkdir(publicDir, { recursive: true });
+  await mkdir(brandPublicDir, { recursive: true });
+}
+
+async function removeObsoletePublicAssets() {
+  const generatedPrefixes = [
+    'apple-touch-icon-',
+    'icon-192-',
+    'icon-512-',
+    'manifest-',
+    'og-preview-',
+    'raylimit-favicon-',
+    'raylimit-icon-',
+    'raylimit-icon-white-',
+  ];
+  const publicEntries = await readdir(publicDir, { withFileTypes: true });
+
+  await Promise.all(
+    publicEntries.flatMap((entry) => {
+      if (!entry.isFile()) {
+        return [];
+      }
+
+      const filePath = path.join(publicDir, entry.name);
+      const isLegacyFile = legacyPublicFiles.includes(entry.name);
+      const isVersionedGeneratedFile = generatedPrefixes.some((prefix) =>
+        entry.name.startsWith(prefix),
+      );
+
+      if (isLegacyFile || isVersionedGeneratedFile) {
+        return unlink(filePath);
+      }
+
+      return [];
+    }),
+  );
+
+  const brandEntries = await readdir(brandNamespaceRootDir, { withFileTypes: true });
+
+  await Promise.all(
+    brandEntries.flatMap((entry) => {
+      if (entry.name === currentBrandSlug) {
+        return [];
+      }
+
+      return rm(path.join(brandNamespaceRootDir, entry.name), {
+        force: true,
+        recursive: true,
+      });
+    }),
+  );
 }
 
 async function syncSvgCopies() {
@@ -97,6 +164,37 @@ function svgDataUri(source) {
   return `data:image/svg+xml;base64,${Buffer.from(source).toString('base64')}`;
 }
 
+function faviconSvg() {
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1000">
+      <style>
+        :root { --icon-color: #000000; }
+        @media (prefers-color-scheme: dark) {
+          :root { --icon-color: #ffffff; }
+        }
+        .brand-fill { fill: var(--icon-color); }
+        .brand-stroke {
+          fill: none;
+          stroke: var(--icon-color);
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          stroke-width: 54;
+        }
+      </style>
+      <g class="brand-fill" transform="translate(280 120) scale(0.72)">
+        <polygon points="530,530 900,530 650,650 530,1000" />
+        <polygon points="470,530 470,900 350,650 0,530" />
+        <polygon points="530,470 530,100 650,350 1000,470" />
+        <polygon points="470,470 100,470 350,350 470,0" />
+      </g>
+      <g class="brand-stroke">
+        <path d="M248 88C184 88 160 126 160 202V324C160 395 126 443 84 470C126 497 160 545 160 616V798C160 874 184 912 248 912" />
+        <path d="M1032 88C1096 88 1120 126 1120 202V324C1120 395 1154 443 1196 470C1154 497 1120 545 1120 616V798C1120 874 1096 912 1032 912" />
+      </g>
+    </svg>`,
+  );
+}
+
 function ogPreviewSvg(iconSource) {
   const iconUri = svgDataUri(iconSource);
 
@@ -141,8 +239,39 @@ async function buildSiteIcons() {
     .toFile(sitePngOutputs.manifestIcons.large);
 }
 
+async function buildFavicon() {
+  await writeFile(sitePngOutputs.favicon, faviconSvg());
+}
+
+async function buildManifest() {
+  const manifest = {
+    name: 'RayLimit Documentation',
+    short_name: 'RayLimit Docs',
+    theme_color: '#ffffff',
+    background_color: '#ffffff',
+    display: 'standalone',
+    scope: '.',
+    start_url: '.',
+    icons: [
+      {
+        src: brandAssetFiles.manifestIcons.small,
+        type: 'image/png',
+        sizes: '192x192',
+      },
+      {
+        src: brandAssetFiles.manifestIcons.large,
+        type: 'image/png',
+        sizes: '512x512',
+      },
+    ],
+  };
+
+  await writeFile(sitePngOutputs.manifest, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 async function main() {
   await ensureDirectories();
+  await removeObsoletePublicAssets();
   await syncSvgCopies();
 
   await renderBrandedIcon({
@@ -158,6 +287,8 @@ async function main() {
   });
 
   await buildSiteIcons();
+  await buildFavicon();
+  await buildManifest();
   await buildOgPreview();
 }
 

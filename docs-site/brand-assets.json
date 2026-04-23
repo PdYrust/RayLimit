@@ -1,0 +1,17 @@
+{
+  "namespace": "brand/raylimit-docs",
+  "files": {
+    "appleTouchIcon": "apple-touch-icon.png",
+    "favicon": "raylimit-favicon.svg",
+    "icons": {
+      "dark": "raylimit-icon-white.svg",
+      "light": "raylimit-icon.svg"
+    },
+    "manifest": "manifest.json",
+    "manifestIcons": {
+      "large": "icon-512.png",
+      "small": "icon-192.png"
+    },
+    "previewImage": "og-preview.png"
+  }
+}
