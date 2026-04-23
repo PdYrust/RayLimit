@@ -5,8 +5,12 @@ const withNextra = require('nextra')({
 
 const isGhPages = process.env.GHPAGES === '1';
 const repoName = 'RayLimit';
+const docsBasePath = isGhPages ? `/${repoName}` : '';
 
 module.exports = withNextra({
+  env: {
+    NEXT_PUBLIC_DOCS_BASE_PATH: docsBasePath,
+  },
   images: {
     unoptimized: true,
   },
@@ -15,9 +19,9 @@ module.exports = withNextra({
   },
   reactStrictMode: true,
   ...(isGhPages && {
-    basePath: `/${repoName}`,
+    basePath: docsBasePath,
     output: 'export',
-    assetPrefix: `/${repoName}/`,
+    assetPrefix: `${docsBasePath}/`,
     trailingSlash: true,
   }),
 });

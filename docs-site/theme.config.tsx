@@ -18,31 +18,35 @@ const BRAND_SURFACES = {
   dark: '#000000',
   light: '#ffffff',
 } as const;
+const DOCS_BASE_PATH = process.env.NEXT_PUBLIC_DOCS_BASE_PATH || '';
 const BRAND_ASSET_NAMESPACE = brandAssets.namespace;
 const BRAND_ASSET_FILES = brandAssets.files;
 const SOCIAL_PREVIEW_IMAGE = `${SITE_URL}/${BRAND_ASSET_NAMESPACE}/${BRAND_ASSET_FILES.previewImage}`;
 
-function assetPath(basePath: string, fileName: string): string {
-  return `${basePath || ''}/${BRAND_ASSET_NAMESPACE}/${fileName}`;
+function docsPath(pathName: string): string {
+  return `${DOCS_BASE_PATH}${pathName}`;
 }
 
-function brandAssetPaths(basePath: string) {
+function brandAssetPath(fileName: string): string {
+  return docsPath(`/${BRAND_ASSET_NAMESPACE}/${fileName}`);
+}
+
+function brandAssetPaths() {
   return {
-    appleTouchIcon: assetPath(basePath, BRAND_ASSET_FILES.appleTouchIcon),
-    favicon: assetPath(basePath, BRAND_ASSET_FILES.favicon),
+    appleTouchIcon: brandAssetPath(BRAND_ASSET_FILES.appleTouchIcon),
+    favicon: brandAssetPath(BRAND_ASSET_FILES.favicon),
     icons: {
-      dark: assetPath(basePath, BRAND_ASSET_FILES.icons.dark),
-      light: assetPath(basePath, BRAND_ASSET_FILES.icons.light),
+      dark: brandAssetPath(BRAND_ASSET_FILES.icons.dark),
+      light: brandAssetPath(BRAND_ASSET_FILES.icons.light),
     },
-    manifest: assetPath(basePath, BRAND_ASSET_FILES.manifest),
+    manifest: brandAssetPath(BRAND_ASSET_FILES.manifest),
   };
 }
 
 function BrandLogoMark() {
-  const { basePath = '' } = useRouter();
   const { resolvedTheme } = useTheme();
   const [isThemeReady, setIsThemeReady] = useState(false);
-  const assetPaths = brandAssetPaths(basePath);
+  const assetPaths = brandAssetPaths();
   const isDarkTheme = isThemeReady && resolvedTheme === 'dark';
 
   useEffect(() => {
@@ -140,12 +144,12 @@ const config: DocsThemeConfig = {
   },
   head: () => {
     const { title } = useConfig();
-    const { asPath, basePath = '', route } = useRouter();
+    const { asPath, route } = useRouter();
     const currentPath = (asPath || '/').split('#')[0].split('?')[0];
     const canonicalPath = currentPath === '/' ? '' : currentPath;
     const canonicalUrl = `${SITE_URL}${canonicalPath}`;
     const pageTitle = title && route !== '/' ? `${title} – RayLimit Documentation` : SITE_TITLE;
-    const assetPaths = brandAssetPaths(basePath);
+    const assetPaths = brandAssetPaths();
 
     return (
       <>
