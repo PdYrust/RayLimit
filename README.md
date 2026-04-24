@@ -67,21 +67,21 @@ RayLimit is maintained as an independent operator-focused project. Optional supp
 
 <dl>
   <dt>
-    <img src="assets/support/ton.svg" alt="" width="24" height="24"> <strong>TON</strong> <code>TON</code>
+    <img src="assets/support/ton.svg" alt="" width="18" height="18"> <strong>TON</strong> <code>TON</code>
   </dt>
   <dd>
     <code>UQC_4BlT2iUlliYUDDCzkDBhBPrww3plMH3XqWaWeDRXfWVj</code>
   </dd>
 
   <dt>
-    <img src="assets/support/usdt.svg" alt="" width="24" height="24"> <strong>USDT</strong> <code>TRC20</code>
+    <img src="assets/support/usdt.svg" alt="" width="18" height="18"> <strong>USDT</strong> <code>TRC20</code>
   </dt>
   <dd>
     <code>TUWcBfKhmpLQBC961oCJf7zuXTN2ezMbkF</code>
   </dd>
 
   <dt>
-    <img src="assets/support/usdt.svg" alt="" width="24" height="24"> <strong>USDT</strong> <code>BEP20</code>
+    <img src="assets/support/usdt.svg" alt="" width="18" height="18"> <strong>USDT</strong> <code>BEP20</code>
   </dt>
   <dd>
     <code>0x24855aea3d6c88a164e440503d82fac1b09ce8f5</code>
