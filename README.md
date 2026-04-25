@@ -63,30 +63,14 @@ raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --ra
 
 ## Support RayLimit
 
-RayLimit is maintained as an independent operator-focused project. Optional support helps keep development, testing, and documentation moving forward.
+RayLimit is maintained as an independent operator-focused project. Optional support helps keep development, testing, documentation, and release work moving forward.
 
-<dl>
-  <dt>
-    <img src="assets/support/ton.svg" alt="" width="18" height="18"> <strong>TON</strong> <code>TON</code>
-  </dt>
-  <dd>
-    <code>UQC_4BlT2iUlliYUDDCzkDBhBPrww3plMH3XqWaWeDRXfWVj</code>
-  </dd>
-
-  <dt>
-    <img src="assets/support/usdt.svg" alt="" width="18" height="18"> <strong>USDT</strong> <code>TRC20</code>
-  </dt>
-  <dd>
-    <code>TUWcBfKhmpLQBC961oCJf7zuXTN2ezMbkF</code>
-  </dd>
-
-  <dt>
-    <img src="assets/support/usdt.svg" alt="" width="18" height="18"> <strong>USDT</strong> <code>BEP20</code>
-  </dt>
-  <dd>
-    <code>0x24855aea3d6c88a164e440503d82fac1b09ce8f5</code>
-  </dd>
-</dl>
+-   <img src="assets/support/ton.svg" alt="" width="22" height="22"> **TON** on `TON`<br>
+    `UQC_4BlT2iUlliYUDDCzkDBhBPrww3plMH3XqWaWeDRXfWVj`
+-   <img src="assets/support/usdt.svg" alt="" width="22" height="22"> **USDT** on `TRC20`<br>
+    `TUWcBfKhmpLQBC961oCJf7zuXTN2ezMbkF`
+-   <img src="assets/support/usdt.svg" alt="" width="22" height="22"> **USDT** on `BEP20`<br>
+    `0x24855aea3d6c88a164e440503d82fac1b09ce8f5`
 
 Always verify the asset, network, and address before sending funds.
 
