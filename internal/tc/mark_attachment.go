@@ -201,7 +201,7 @@ func (s MarkAttachmentFilterSpec) handleArg() string {
 }
 
 // MarkAttachmentExecution captures one concrete mark-backed attachment backend
-// plan that later limiter-specific phases can embed into a generic Plan.
+// plan that the generic Plan embeds for mark-backed attachment backends.
 type MarkAttachmentExecution struct {
 	Backend              MarkAttachmentBackend          `json:"backend,omitempty"`
 	Identity             TrafficIdentity                `json:"identity,omitempty"`
@@ -1174,6 +1174,9 @@ func ParseNftablesSnapshot(stdout string) (NftablesSnapshot, error) {
 	payload := strings.TrimSpace(stdout)
 	if payload == "" {
 		return NftablesSnapshot{}, nil
+	}
+	if !nftOutputIsJSON(payload) {
+		return parseNftablesRulesetText(payload)
 	}
 
 	var document struct {

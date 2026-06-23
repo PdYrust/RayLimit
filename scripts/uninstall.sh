@@ -1,7 +1,5 @@
 #!/bin/sh
 
-# shellcheck disable=SC2034
-
 set -eu
 umask 022
 

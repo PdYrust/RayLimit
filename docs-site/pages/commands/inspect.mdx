@@ -33,6 +33,21 @@ It helps you understand:
 
 If multiple targets match and `--all` is not set, RayLimit returns a selection error instead of choosing one target silently.
 
+`--pid 0` is rejected with a clear usage error: PID 0 is the kernel scheduler (swapper) and is never a valid Xray target. Negative PIDs are rejected the same way.
+
+## Global Flags Worth Knowing Here
+
+`inspect` honors the root-command global overrides (see [limit › Global Flags](limit#global-flags) for the full table). The two most relevant to inspection are:
+
+- `--xray-binary <path>` (`RAYLIMIT_XRAY_BINARY`) — query a fork binary at a non-standard path; see [Runtime Targeting](../core-concepts/runtime-targeting) for resolution precedence.
+- `--container-cli <name>` (`RAYLIMIT_CONTAINER_CLI`) — inspect runtimes under `podman` or `nerdctl` instead of `docker`.
+
+For deeper diagnostics, add `--log-level debug` (`RAYLIMIT_LOG_LEVEL`) before the subcommand:
+
+```bash
+sudo raylimit --log-level debug inspect --pid 1234
+```
+
 ## Useful Inspection Patterns
 
 Inspect one runtime by PID:

@@ -91,13 +91,14 @@ const (
 	ProviderErrorCodeUnavailable      ProviderErrorCode = "unavailable"
 	ProviderErrorCodePermissionDenied ProviderErrorCode = "permission_denied"
 	ProviderErrorCodePartialAccess    ProviderErrorCode = "partial_access"
+	ProviderErrorCodeNoMatches        ProviderErrorCode = "no_matches"
 	ProviderErrorCodeExecutionFailed  ProviderErrorCode = "execution_failed"
 	ProviderErrorCodeInvalidData      ProviderErrorCode = "invalid_data"
 )
 
 func (c ProviderErrorCode) Fatal() bool {
 	switch c {
-	case ProviderErrorCodeNotInstalled, ProviderErrorCodeUnavailable, ProviderErrorCodePermissionDenied, ProviderErrorCodePartialAccess:
+	case ProviderErrorCodeNotInstalled, ProviderErrorCodeUnavailable, ProviderErrorCodePermissionDenied, ProviderErrorCodePartialAccess, ProviderErrorCodeNoMatches:
 		return false
 	case ProviderErrorCodeExecutionFailed, ProviderErrorCodeInvalidData:
 		return true
@@ -108,7 +109,7 @@ func (c ProviderErrorCode) Fatal() bool {
 
 func (c ProviderErrorCode) Limitation() bool {
 	switch c {
-	case ProviderErrorCodeNotInstalled, ProviderErrorCodeUnavailable, ProviderErrorCodePermissionDenied, ProviderErrorCodePartialAccess:
+	case ProviderErrorCodeNotInstalled, ProviderErrorCodeUnavailable, ProviderErrorCodePermissionDenied, ProviderErrorCodePartialAccess, ProviderErrorCodeNoMatches:
 		return true
 	default:
 		return false

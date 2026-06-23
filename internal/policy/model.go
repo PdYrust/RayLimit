@@ -292,7 +292,7 @@ func (t Target) Validate() error {
 			return nil
 		}
 		if _, err := ipaddr.Normalize(value); err != nil {
-			return fmt.Errorf("invalid ip target value %q", value)
+			return fmt.Errorf("invalid ip target value %q: %w", value, err)
 		}
 	}
 

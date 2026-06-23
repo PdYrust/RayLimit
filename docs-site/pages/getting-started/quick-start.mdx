@@ -11,6 +11,14 @@ sudo raylimit discover --format json
 
 Use text when you are selecting a target manually. Use JSON when another tool or script needs the runtime list.
 
+If your runtime is the Sanaei fork installed at a non-standard path, point discovery at its binary (vanilla Xray is detected automatically):
+
+```bash
+sudo raylimit discover --xray-binary /opt/sanaei/sanaei-linux-amd64
+```
+
+The same `--xray-binary` override (env `RAYLIMIT_XRAY_BINARY`) can be set before `inspect` and `limit` too. See [Runtime Targeting](../core-concepts/runtime-targeting) for detection and resolution details.
+
 ## 2. Inspect One Runtime
 
 ```bash

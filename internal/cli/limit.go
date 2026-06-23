@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/PdYrust/RayLimit/internal/buildinfo"
 	"github.com/PdYrust/RayLimit/internal/discovery"
@@ -26,6 +28,12 @@ const (
 	limitOperationRemove limitOperation = "remove"
 )
 
+// maxRateBytesPerSecond caps an accepted --rate value at 1 TiB/s. This is far
+// above any realistic 10GbE/40GbE link (which top out around 1.25-5 GiB/s) yet
+// low enough that downstream HTB rate scaling (×8 for bits/s) cannot overflow
+// int64 and wrap into a negative or absurd tc class rate.
+const maxRateBytesPerSecond int64 = 1099511627776
+
 func (o limitOperation) Valid() bool {
 	switch o {
 	case limitOperationApply, limitOperationRemove:
@@ -39,6 +47,7 @@ type limitRuntimeSelection struct {
 	Source    discovery.DiscoverySource
 	Name      string
 	PID       int
+	PIDSet    bool
 	Container string
 }
 
@@ -47,6 +56,7 @@ func (s limitRuntimeSelection) Validate() error {
 		Source:    s.Source,
 		Name:      s.Name,
 		PID:       s.PID,
+		PIDSet:    s.PIDSet,
 		Container: s.Container,
 	}
 	if err := selection.Validate(); err != nil {
@@ -68,6 +78,7 @@ func (s limitRuntimeSelection) inspectSelection() inspectSelection {
 		Source:    s.Source,
 		Name:      s.Name,
 		PID:       s.PID,
+		PIDSet:    s.PIDSet,
 		Container: s.Container,
 	}
 }
@@ -83,6 +94,8 @@ type limitOptions struct {
 	unlimited           bool
 	execute             bool
 	allowMissingTCState bool
+	skipPrivilegeCheck  bool
+	privilegeProbe      func(ctx context.Context) error
 }
 
 func (o limitOptions) Validate() error {
@@ -124,8 +137,13 @@ func (o limitOptions) Validate() error {
 		if o.rateBytes != 0 {
 			return errors.New("cannot use --rate with --unlimited")
 		}
-	} else if o.rateBytes <= 0 {
-		return errors.New("rate must be greater than zero")
+	} else {
+		if o.rateBytes <= 0 {
+			return errors.New("rate must be greater than zero")
+		}
+		if o.rateBytes > maxRateBytesPerSecond {
+			return fmt.Errorf("rate must not exceed %d bytes per second (1 TiB/s); higher values overflow HTB rate scaling", maxRateBytesPerSecond)
+		}
 	}
 	if o.allowMissingTCState && !o.execute {
 		return errors.New("--allow-missing-tc-state requires --execute")
@@ -433,6 +451,7 @@ func (a App) newLimitCommand() command {
 	cmd := command{
 		name:        "limit",
 		summary:     "Plan or execute a reconcile-aware traffic limit",
+		category:    commandCategoryCore,
 		usage:       buildinfo.BinaryName + " limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) [--ip-aggregation shared|per_ip] --device <device> --direction upload|download [--rate <bytes-per-second> | --unlimited | --remove] [--source host_process|docker_container] (--pid <pid> | --container <id-or-name> | --name <name>) [--execute] [--allow-missing-tc-state] [--format text|json]",
 		description: "Plan a reconcile-aware tc-backed limit flow for a selected runtime target. IP-targeted limiting currently supports a runtime-local shared baseline with --ip all, specific IP override limits, and specific IP unlimited exceptions. When --ip all is combined with --ip-aggregation per_ip, RayLimit expands the current live client IP set into concrete specific-IP work through Xray-backed session evidence for apply and remove. Concrete direct client IP rules cover IPv4, IPv4-mapped IPv6 after canonicalization to IPv4, and IPv6 traffic that fits the current u32 backend assumption of no IPv6 extension headers. Inbound-targeted limiting uses concrete nftables mark plus tc fw attachment when readable Xray config proves one concrete TCP listener for the selected inbound tag; otherwise it stays conservative and blocks apply execution. Outbound-targeted limiting uses concrete nftables output matching plus tc fw attachment when readable Xray config proves one unique non-zero outbound socket mark for the selected tag without proxy or dialer-proxy indirection; otherwise it stays conservative and blocks concrete execution.",
 	}
@@ -441,14 +460,14 @@ func (a App) newLimitCommand() command {
 		writeLimitHelp(w, cmd)
 	}
 
-	cmd.run = func(args []string, streams commandIO) int {
-		return a.runLimit(args, streams, cmd)
+	cmd.run = func(ctx context.Context, args []string, streams commandIO) int {
+		return a.runLimit(ctx, args, streams, cmd)
 	}
 
 	return cmd
 }
 
-func (a App) runLimit(args []string, streams commandIO, cmd command) int {
+func (a App) runLimit(ctx context.Context, args []string, streams commandIO, cmd command) int {
 	flags := flag.NewFlagSet(cmd.name, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
@@ -468,6 +487,7 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	execute := false
 	remove := false
 	allowMissingTCState := false
+	skipPrivilegeCheck := false
 
 	flags.StringVar(&outputFormat, "format", outputFormat, "output format")
 	flags.StringVar(&source, "source", source, "discovery source")
@@ -485,6 +505,7 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	flags.BoolVar(&execute, "execute", execute, "perform real local tc execution")
 	flags.BoolVar(&remove, "remove", remove, "remove the selected target rule set instead of planning a new one")
 	flags.BoolVar(&allowMissingTCState, "allow-missing-tc-state", allowMissingTCState, "allow real execution when tc state cannot be observed first")
+	flags.BoolVar(&skipPrivilegeCheck, "skip-privilege-check", skipPrivilegeCheck, "skip the up-front privilege check (trust CAP_NET_ADMIN); real tc commands still enforce EPERM")
 
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -506,6 +527,7 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 			Source:    discovery.DiscoverySource(source),
 			Name:      strings.TrimSpace(name),
 			PID:       pid,
+			PIDSet:    flagWasSet(flags, "pid"),
 			Container: strings.TrimSpace(container),
 		},
 		target: limitTargetSelection{
@@ -520,6 +542,8 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 		unlimited:           unlimited,
 		execute:             execute,
 		allowMissingTCState: allowMissingTCState,
+		skipPrivilegeCheck:  skipPrivilegeCheck || envFlagEnabled("RAYLIMIT_SKIP_PRIVILEGE_CHECK"),
+		privilegeProbe:      newCachedTCPrivilegeProbe(a.tcRunner, a.overrides.tcBinary),
 	}
 	if remove {
 		options.operation = limitOperationRemove
@@ -528,7 +552,7 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	if err := options.Validate(); err != nil {
 		return writeCommandUsageError(streams.stderr, cmd, err.Error())
 	}
-	result, err := a.discovery.Discover(context.Background(), discovery.Request{})
+	result, err := a.discovery.Discover(ctx, discovery.Request{})
 	if err != nil {
 		streams.diag.Errorf(logPhaseDiscovery, "limit planning failed during discovery: %s", err)
 		return exitCodeFailure
@@ -552,7 +576,7 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 		return exitCodeFailure
 	}
 
-	report, execErr := a.limitReport(selectedTargets[0], options, result.ProviderErrors)
+	report, execErr := a.limitReport(ctx, selectedTargets[0], options, result.ProviderErrors)
 	if err := writeLimitReport(streams.stdout, options.format, report); err != nil {
 		fields := append(report.logFields(), errorLogField(err))
 		streams.diag.Errorw(logPhaseOutput, "failed to render limit result", fields...)
@@ -567,17 +591,17 @@ func (a App) runLimit(args []string, streams commandIO, cmd command) int {
 	return exitCodeSuccess
 }
 
-func (a App) limitReport(target discovery.RuntimeTarget, options limitOptions, providerErrors []discovery.ProviderError) (limitReport, error) {
+func (a App) limitReport(ctx context.Context, target discovery.RuntimeTarget, options limitOptions, providerErrors []discovery.ProviderError) (limitReport, error) {
 	if options.target.NormalizedIPAggregation() == policy.IPAggregationModePerIP {
-		return a.limitPerIPReport(context.Background(), target, options, providerErrors)
+		return a.limitPerIPReport(ctx, target, options, providerErrors)
 	}
 
-	preview, previewErr := a.limitConcretePreview(context.Background(), target, options.target, options, providerErrors)
+	preview, previewErr := a.limitConcretePreview(ctx, target, options.target, options, providerErrors)
 	if previewErr != nil || preview.Plan == nil {
 		return preview.Report, previewErr
 	}
 
-	results, execErr := a.executeLimitPlan(context.Background(), *preview.Plan, options)
+	results, execErr := a.executeLimitPlan(ctx, *preview.Plan, options)
 	preview.Report.Results = results
 	if execErr != nil {
 		preview.Report.ExecutionNote = execErr.Error()
@@ -911,7 +935,27 @@ func (a App) limitConcretePreview(ctx context.Context, target discovery.RuntimeT
 }
 
 func (a App) executeLimitPlan(ctx context.Context, plan tc.Plan, options limitOptions) ([]tc.Result, error) {
-	return tc.NewExecutor(a.tcRunner, !options.execute, a.privilegeStatus).Execute(ctx, plan)
+	executor := tc.NewExecutor(a.tcRunner, !options.execute, a.privilegeStatus)
+	executor.SkipPrivilegeCheck = options.skipPrivilegeCheck
+	executor.PrivilegeProbe = options.privilegeProbe
+
+	return executor.Execute(ctx, plan)
+}
+
+// newCachedTCPrivilegeProbe returns a privilege probe that runs at most once per
+// CLI invocation and caches its result, so repeated per-IP executions reuse a
+// single read-only `tc qdisc show dev lo` probe.
+func newCachedTCPrivilegeProbe(runner tc.Runner, binary string) func(ctx context.Context) error {
+	var once sync.Once
+	var result error
+
+	return func(ctx context.Context) error {
+		once.Do(func() {
+			result = tc.ProbePrivilege(ctx, runner, binary)
+		})
+
+		return result
+	}
 }
 
 func limitPerIPClientIPs(result discovery.SessionEvidenceResult) []string {
@@ -1681,7 +1725,7 @@ func (a App) planner() tcPlanner {
 		return a.limiterPlanner
 	}
 
-	return tc.Planner{}
+	return tc.Planner{Binary: strings.TrimSpace(a.overrides.tcBinary)}
 }
 
 func (a App) inspector() tcStateInspector {
@@ -1697,7 +1741,7 @@ func (a App) nftablesInspector() nftablesStateInspector {
 		return a.nftInspector
 	}
 
-	return tc.NftablesInspector{Runner: a.tcRunner}
+	return tc.NftablesInspector{Runner: a.tcRunner, Binary: strings.TrimSpace(a.overrides.nftBinary)}
 }
 
 func (a App) inboundSelectorDeriver() inboundMarkSelectorDeriver {
@@ -1722,6 +1766,9 @@ func (a App) sessionEvidenceProvider() sessionEvidenceProvider {
 	}
 
 	provider := discovery.NewXraySessionEvidenceProvider(a.discovery)
+	provider.XrayBinaryOverride = strings.TrimSpace(a.overrides.xrayBinary)
+	provider.ContainerCLI = strings.TrimSpace(a.overrides.containerCLI)
+	provider.APIDetector = discovery.NewAPICapabilityDetectorWithContainerCLI(a.overrides.containerCLI)
 	return provider
 }
 
@@ -2090,8 +2137,9 @@ func writeLimitReport(w io.Writer, format discovery.OutputFormat, report limitRe
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report)
 	case discovery.OutputFormatText:
-		writeLimitText(w, report)
-		return nil
+		tracked := &errTrackingWriter{w: w}
+		writeLimitText(tracked, report)
+		return tracked.err
 	default:
 		return fmt.Errorf("unsupported output format %q", format)
 	}
@@ -2382,7 +2430,7 @@ func writeLimitPerIPExpansionText(w io.Writer, mode string, report limitPerIPExp
 						w,
 						"       %d. %s\n",
 						stepIndex+1,
-						strings.Join(append([]string{step.Command.Path}, step.Command.Args...), " "),
+						formatCommandLine(step.Command),
 					)
 				}
 			}
@@ -2467,8 +2515,32 @@ func describeClientIPIdentity(value string) (string, int) {
 
 func writePlanSteps(w io.Writer, steps []tc.Step) {
 	for index, step := range steps {
-		_, _ = fmt.Fprintf(w, "  %d. %s\n", index+1, strings.Join(append([]string{step.Command.Path}, step.Command.Args...), " "))
+		_, _ = fmt.Fprintf(w, "  %d. %s\n", index+1, formatCommandLine(step.Command))
 	}
+}
+
+// formatCommandLine renders a planned tc/nft command for display, quoting any
+// token that contains whitespace or shell metacharacters so arguments with
+// spaces are unambiguous and cannot be misread as multiple arguments.
+func formatCommandLine(command tc.Command) string {
+	tokens := append([]string{command.Path}, command.Args...)
+	rendered := make([]string, len(tokens))
+	for index, token := range tokens {
+		rendered[index] = quoteCommandToken(token)
+	}
+
+	return strings.Join(rendered, " ")
+}
+
+func quoteCommandToken(token string) string {
+	if token == "" {
+		return `""`
+	}
+	if strings.ContainsAny(token, " \t\n\r\"'\\;&$()`{}|<>*?") {
+		return strconv.Quote(token)
+	}
+
+	return token
 }
 
 func writeRequestedLimitText(w io.Writer, operation limitOperation, scope tc.Scope, rateBytes int64, unlimited bool) {
@@ -2771,6 +2843,7 @@ func writeLimitHelp(w io.Writer, cmd command) {
 	_, _ = io.WriteString(w, "  --remove                          Remove the selected limiter state instead of planning a new one\n")
 	_, _ = io.WriteString(w, "  --execute                         Perform real local tc execution\n")
 	_, _ = io.WriteString(w, "  --allow-missing-tc-state          Allow real execution when tc state cannot be observed first\n")
+	_, _ = io.WriteString(w, "  --skip-privilege-check            Skip the up-front privilege check; trust CAP_NET_ADMIN (env RAYLIMIT_SKIP_PRIVILEGE_CHECK). Real tc commands still enforce EPERM\n")
 	_, _ = io.WriteString(w, "  --format text|json                Render as text or machine-readable JSON (default: text)\n")
 	_, _ = io.WriteString(w, "\nRuntime selection:\n")
 	_, _ = io.WriteString(w, "  --source host_process|docker_container\n")

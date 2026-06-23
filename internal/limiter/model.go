@@ -104,7 +104,7 @@ func (s Subject) Validate() error {
 			return nil
 		}
 		if _, err := ipaddr.Normalize(value); err != nil {
-			return fmt.Errorf("invalid ip subject value %q", value)
+			return fmt.Errorf("invalid ip subject value %q: %w", value, err)
 		}
 	}
 
@@ -304,7 +304,7 @@ func DesiredStateFromEvaluation(session discovery.Session, evaluation policy.Eva
 	return desired, nil
 }
 
-// AppliedState describes limiter state that has already been realized by a future backend.
+// AppliedState describes limiter state that has already been realized by a backend.
 type AppliedState struct {
 	Mode      DesiredMode        `json:"mode,omitempty"`
 	Subject   Subject            `json:"subject"`

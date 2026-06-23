@@ -183,11 +183,16 @@ const (
 	APICapabilityLimitationMissingConfigPath APICapabilityLimitation = "missing_config_path"
 	APICapabilityLimitationIncompleteConfig  APICapabilityLimitation = "incomplete_config"
 	APICapabilityLimitationMissingConfigHint APICapabilityLimitation = "missing_config_hint"
+	// APICapabilityLimitationStatsUserOnlineNotEnabled reports that the Xray API
+	// is otherwise configured, but the fork-specific StatsUserOnline service is
+	// absent from the api.services list, so online-user queries cannot return
+	// live evidence until the operator enables it.
+	APICapabilityLimitationStatsUserOnlineNotEnabled APICapabilityLimitation = "stats_user_online_not_enabled"
 )
 
 func (l APICapabilityLimitation) Valid() bool {
 	switch l {
-	case "", APICapabilityLimitationPermissionDenied, APICapabilityLimitationMissingConfigPath, APICapabilityLimitationIncompleteConfig, APICapabilityLimitationMissingConfigHint:
+	case "", APICapabilityLimitationPermissionDenied, APICapabilityLimitationMissingConfigPath, APICapabilityLimitationIncompleteConfig, APICapabilityLimitationMissingConfigHint, APICapabilityLimitationStatsUserOnlineNotEnabled:
 		return true
 	default:
 		return false
@@ -199,6 +204,14 @@ type APICapability struct {
 	Status     APICapabilityStatus     `json:"status"`
 	Reason     string                  `json:"reason,omitempty"`
 	Limitation APICapabilityLimitation `json:"limitation,omitempty"`
+	// StatsUserOnline reports whether the fork-specific StatsUserOnline service
+	// was observed in the runtime's api.services configuration. It is a
+	// three-state value: nil when the service list could not be determined
+	// (config not inspected or unreadable), a pointer to true when the service
+	// is enabled, and a pointer to false when an api.services list was read but
+	// did not include StatsUserOnline. Online-user queries on the Sanaei fork
+	// require this service to be enabled.
+	StatsUserOnline *bool `json:"stats_user_online,omitempty"`
 }
 
 // Validate checks that the API capability payload is internally consistent.

@@ -62,6 +62,67 @@ Inspect every runtime from one discovery source:
 sudo raylimit inspect --source host_process --all
 ```
 
+## Binary Detection And Resolution
+
+Before a runtime can be selected, discovery has to recognize it as an Xray-family process or container, then resolve which binary to query.
+
+### Prefix-Match Detection
+
+Detection normalizes a binary basename (lowercase, trailing `.exe` removed) and prefix-matches it against an allowlist:
+
+- `xray`
+- `xray-core`
+- `sanaei`
+- `sanaei-core`
+
+Because the match is a prefix match, OS/arch release names and fork builds are recognized without extra configuration: `xray-linux-amd64`, `xray-darwin-arm64`, `sanaei-linux-amd64`, and even the 15-character `/proc/<pid>/comm` truncation (`xray-linux-amd6`). The Sanaei fork is detected through the `sanaei*` prefixes; vanilla Xray is detected through `xray*`.
+
+### Docker Detection Signals
+
+For container runtimes, detection combines four signal classes and keeps the highest confidence while retaining every matched reason:
+
+| Signal | Source | Confidence |
+| ------ | ------ | ---------- |
+| Image repository base | container image name | High |
+| Container command | entrypoint/command | High |
+| Container labels | `app`, `com.docker.compose.service`, `org.opencontainers.image.title` | Medium |
+| Published API port | port bindings, default `10085` | Low |
+
+`app` is matched as a prefix; `com.docker.compose.service` and `org.opencontainers.image.title` are matched as substrings.
+
+When running containers are scanned but none match any signal, discovery records a `no_matches` limitation (it is a limitation, not a fatal error — other discovery sources still return their results).
+
+### Binary-Name Resolution Precedence
+
+When RayLimit queries the Xray API, it resolves the binary in this order:
+
+For host runtimes:
+
+1. `--xray-binary` (or `RAYLIMIT_XRAY_BINARY`)
+2. the detected absolute executable path (`HostProcess.ExecutablePath`)
+3. the detected binary basename (`Identity.Binary`)
+4. the literal `"xray"` fallback
+
+For container runtimes:
+
+1. `--xray-binary` (or `RAYLIMIT_XRAY_BINARY`)
+2. the detected in-container binary basename
+3. the literal `"xray"` fallback
+
+Use `--xray-binary` when the fork binary lives at a non-standard path:
+
+```bash
+sudo raylimit discover --xray-binary /opt/sanaei/sanaei-linux-amd64
+```
+
+### Container CLI Override
+
+Discovery and container queries default to `docker`. Use `--container-cli` (or `RAYLIMIT_CONTAINER_CLI`) to select `podman` or `nerdctl`:
+
+```bash
+sudo raylimit discover --container-cli podman
+```
+
 ## Why Selection Discipline Matters
 
 If runtime selection is ambiguous:

@@ -89,6 +89,13 @@ func writeTextResult(w io.Writer, result Result) error {
 					return err
 				}
 			}
+			if target.APICapability != nil {
+				if hint := apiCapabilityLimitationHint(target.APICapability.Limitation); hint != "" {
+					if _, err := fmt.Fprintf(w, "     api note: %s\n", hint); err != nil {
+						return err
+					}
+				}
+			}
 			if target.HostProcess != nil && target.HostProcess.PID != 0 {
 				if _, err := fmt.Fprintf(w, "     pid: %d\n", target.HostProcess.PID); err != nil {
 					return err
@@ -195,4 +202,20 @@ func firstNonEmpty(values ...string) string {
 	}
 
 	return ""
+}
+
+// apiCapabilityLimitationHint returns operator-facing, actionable text for an
+// API capability limitation, or an empty string when no dedicated guidance
+// applies. It is shared by the discover and inspect renderers.
+func apiCapabilityLimitationHint(limitation APICapabilityLimitation) string {
+	switch limitation {
+	case APICapabilityLimitationStatsUserOnlineNotEnabled:
+		return fmt.Sprintf(
+			"the %q service is not enabled; add %q to the Xray config \"api.services\" array and restart Xray to enable live online-user evidence",
+			statsUserOnlineServiceName,
+			statsUserOnlineServiceName,
+		)
+	default:
+		return ""
+	}
 }

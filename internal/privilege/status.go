@@ -6,11 +6,17 @@ type Status struct {
 	IsRoot bool
 }
 
-var euidFunc = getEUID
-
 // Current reports the effective privilege level for the current process.
 func Current() Status {
-	euid := euidFunc()
+	return currentWith(getEUID)
+}
+
+// currentWith builds a Status from the effective user id returned by euidFn.
+// It is the single place privilege semantics are derived, so production code
+// and tests share one path. Injecting the lookup as a parameter avoids a
+// mutable package-level global, keeping Current concurrency-safe.
+func currentWith(euidFn func() int) Status {
+	euid := euidFn()
 	return Status{
 		EUID:   euid,
 		IsRoot: euid == 0,

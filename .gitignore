@@ -126,3 +126,4 @@ override.tf.json
 *.bak
 *.orig
 *.rej
+/*.txt

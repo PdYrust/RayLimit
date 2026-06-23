@@ -15,6 +15,7 @@ type inspectSelection struct {
 	Source    discovery.DiscoverySource
 	Name      string
 	PID       int
+	PIDSet    bool
 	Container string
 	All       bool
 }
@@ -27,8 +28,13 @@ func (s inspectSelection) Validate() error {
 	if s.Source != "" && !s.Source.Valid() {
 		return fmt.Errorf("unsupported discovery source %q", s.Source)
 	}
-	if s.PID < 0 {
-		return fmt.Errorf("pid must be greater than zero when provided")
+	// PID 0 is the kernel scheduler (swapper) and is never a valid Xray target.
+	// When --pid was explicitly provided, reject 0 (and negatives) outright
+	// rather than silently treating the zero value as "no PID selected"; this
+	// applies regardless of --source to remove the fat-finger footgun.
+	// PIDSet guards direct-struct-construction callers; flag.IntVar never sets PID<0 with PIDSet=true.
+	if s.PIDSet && s.PID <= 0 {
+		return fmt.Errorf("pid must be a positive process id (pid 0 is the kernel scheduler and is never a valid target)")
 	}
 	if s.PID == 0 && strings.TrimSpace(s.Container) == "" && strings.TrimSpace(s.Name) == "" {
 		return nil
@@ -84,20 +90,34 @@ func (a App) newInspectCommand() command {
 		summary:     "Inspect runtime metadata and API hints",
 		usage:       buildinfo.BinaryName + " inspect [--format text|json] [--source host_process|docker_container] [--name <name>] [--pid <pid>] [--container <id-or-name>] [--all]",
 		description: "Inspect discovered Xray runtime metadata and API capability hints using local discovery results only.",
+		category:    commandCategoryCore,
 	}
 
 	cmd.help = func(w io.Writer) {
 		writeInspectHelp(w, cmd)
 	}
 
-	cmd.run = func(args []string, streams commandIO) int {
-		return a.runInspect(args, streams, cmd)
+	cmd.run = func(ctx context.Context, args []string, streams commandIO) int {
+		return a.runInspect(ctx, args, streams, cmd)
 	}
 
 	return cmd
 }
 
-func (a App) runInspect(args []string, streams commandIO, cmd command) int {
+// flagWasSet reports whether the named flag was explicitly provided on the
+// command line, distinguishing an intentional zero value from the default.
+func flagWasSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+
+	return set
+}
+
+func (a App) runInspect(ctx context.Context, args []string, streams commandIO, cmd command) int {
 	flags := flag.NewFlagSet(cmd.name, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
@@ -137,6 +157,7 @@ func (a App) runInspect(args []string, streams commandIO, cmd command) int {
 		Source:    discovery.DiscoverySource(source),
 		Name:      strings.TrimSpace(name),
 		PID:       pid,
+		PIDSet:    flagWasSet(flags, "pid"),
 		Container: strings.TrimSpace(container),
 		All:       all,
 	}
@@ -144,7 +165,7 @@ func (a App) runInspect(args []string, streams commandIO, cmd command) int {
 		return writeCommandUsageError(streams.stderr, cmd, err.Error())
 	}
 
-	result, err := a.discovery.Discover(context.Background(), discovery.Request{})
+	result, err := a.discovery.Discover(ctx, discovery.Request{})
 	if err != nil {
 		streams.diag.Errorf(logPhaseDiscovery, "inspection failed during discovery: %s", err)
 		return exitCodeFailure
@@ -182,7 +203,7 @@ func (a App) runInspect(args []string, streams commandIO, cmd command) int {
 	}
 
 	if len(selectedTargets) > 0 {
-		enrichedTargets, err := discovery.NewAPICapabilityDetector().EnrichTargets(context.Background(), selectedTargets)
+		enrichedTargets, err := discovery.NewAPICapabilityDetectorWithContainerCLI(a.overrides.containerCLI).EnrichTargets(ctx, selectedTargets)
 		if err != nil {
 			streams.diag.Errorf(logPhaseDiscovery, "inspection failed during API capability detection: %s", err)
 			return exitCodeFailure

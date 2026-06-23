@@ -17,6 +17,20 @@ raylimit limit (--ip <ip|all> | --inbound <tag> | --outbound <tag>) \
   [--format text|json]
 ```
 
+## Global Flags
+
+These overrides are set on the root command, before the subcommand, and apply to `limit` (a flag wins over its environment variable):
+
+| Flag | Environment variable | Purpose |
+| ---- | -------------------- | ------- |
+| `--xray-binary <path>` | `RAYLIMIT_XRAY_BINARY` | Override the Xray binary path/name (see [Runtime Targeting](../core-concepts/runtime-targeting)) |
+| `--container-cli <name>` | `RAYLIMIT_CONTAINER_CLI` | Container CLI: `docker` (default), `podman`, `nerdctl` |
+| `--tc-binary <path>` | `RAYLIMIT_TC_BINARY` | Override the `tc` binary path |
+| `--nft-binary <path>` | `RAYLIMIT_NFT_BINARY` | Override the `nft` binary path |
+| `--log-level <level>` | `RAYLIMIT_LOG_LEVEL` | Diagnostic verbosity: `error\|warn\|info\|debug` (default `error`) |
+
+The `limit`-specific flags are `--execute`, `--allow-missing-tc-state`, `--format`, and `--skip-privilege-check` (env `RAYLIMIT_SKIP_PRIVILEGE_CHECK`). `--skip-privilege-check` skips the up-front privilege check and trusts `CAP_NET_ADMIN`; real `tc` commands still enforce `EPERM`.
+
 ## What `limit` Actually Does
 
 `limit` does not blindly push traffic-control commands. It:
@@ -80,6 +94,22 @@ Dry-run is the default. Add `--execute` only when:
 - the host is ready for live `tc` mutation
 
 `--allow-missing-tc-state` is more exceptional. It exists for cases where you want live execution even though RayLimit could not observe `tc` state first. It is valid only with `--execute`.
+
+## Re-Applying Without Teardown
+
+Applying one direction and then the other on the same device is now safe. For example:
+
+```bash
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction upload --rate 2048 --execute
+sudo raylimit limit --pid 1234 --inbound api-in --device eth0 --direction download --rate 2048 --execute
+```
+
+The second apply no longer fails with `RTNETLINK answers: File exists` and no longer tears down the sibling (upload) class and filter created by the first. Two mechanisms guarantee this:
+
+- the mark-attachment apply path reconciles against the observed `tc`/`nftables` snapshot, so it only adds what is missing rather than blindly recreating the managed root; and
+- an execution-time backstop treats an "already exists" / "busy" result on the managed root qdisc as an idempotent success (and takes over a foreign root with an explicit replace) instead of surfacing the error.
+
+If you still see `File exists` on re-apply, you are on an older build — upgrade.
 
 For `--ip all --ip-aggregation per_ip`, RayLimit must also derive the current live client IP set before it can build concrete work:
 

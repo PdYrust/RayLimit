@@ -43,7 +43,7 @@ func (s limitTargetSelection) Validate() error {
 			return nil
 		}
 		if _, err := ipaddr.Normalize(value); err != nil {
-			return fmt.Errorf("invalid IP address %q for --ip", value)
+			return fmt.Errorf("invalid IP address %q for --ip: %w", value, err)
 		}
 	case policy.TargetKindInbound, policy.TargetKindOutbound:
 	default:
@@ -130,6 +130,11 @@ func (s limitTargetSelection) selected() (policy.TargetKind, string, int) {
 			} else if normalized, err := ipaddr.Normalize(selection.value); err == nil {
 				selection.value = normalized
 			}
+			// A normalization failure here is intentionally not fatal: selected()
+			// is a best-effort canonicalizer for matching, and Validate() re-runs
+			// ipaddr.Normalize and returns the wrapped ErrInvalidIP cause for an
+			// invalid --ip value, so the error is surfaced there rather than
+			// silently dropped.
 		}
 
 		selectedKind = selection.kind

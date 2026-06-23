@@ -83,6 +83,11 @@ func writeInspectedTarget(w io.Writer, index int, target RuntimeTarget) error {
 				return err
 			}
 		}
+		if hint := apiCapabilityLimitationHint(target.APICapability.Limitation); hint != "" {
+			if _, err := fmt.Fprintf(w, "     api limitation: %s\n", hint); err != nil {
+				return err
+			}
+		}
 	}
 
 	if target.HostProcess != nil {

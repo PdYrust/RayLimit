@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type stubRuntimeTargetDiscoverer struct {
@@ -103,7 +104,7 @@ func TestXraySessionEvidenceProviderReportsUnavailableWhenEndpointIsReachableBut
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(context.Context, string, string, ...string) ([]byte, error) {
+	provider.RunAPICommand = func(context.Context, string, string, time.Duration, string, ...string) ([]byte, error) {
 		return nil, newXraySessionQueryError(SessionEvidenceIssueUnavailable, "Xray API command failed during test")
 	}
 
@@ -273,7 +274,7 @@ func TestXraySessionEvidenceProviderReturnsNoSessionsWhenQueryFindsNone(t *testi
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
+	provider.RunAPICommand = func(_ context.Context, _ string, _ string, _ time.Duration, command string, args ...string) ([]byte, error) {
 		switch command {
 		case "statsgetallonlineusers":
 			return []byte(`{"users":[]}`), nil
@@ -333,11 +334,11 @@ func TestXraySessionEvidenceProviderQueriesContainerizedHostProcessViaContainerA
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(context.Context, string, string, ...string) ([]byte, error) {
+	provider.RunAPICommand = func(context.Context, string, string, time.Duration, string, ...string) ([]byte, error) {
 		t.Fatal("expected host-side xray api command runner to remain unused for containerized host-process query")
 		return nil, nil
 	}
-	provider.RunContainerAPICommand = func(_ context.Context, containerID string, server string, command string, args ...string) ([]byte, error) {
+	provider.RunContainerAPICommand = func(_ context.Context, containerID string, _ string, server string, _ time.Duration, command string, args ...string) ([]byte, error) {
 		if containerID != "container-1" {
 			t.Fatalf("unexpected container id %q", containerID)
 		}
@@ -411,7 +412,7 @@ func TestXraySessionEvidenceProviderReportsContainerAPIQueryPermissionDenied(t *
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunContainerAPICommand = func(context.Context, string, string, string, ...string) ([]byte, error) {
+	provider.RunContainerAPICommand = func(context.Context, string, string, string, time.Duration, string, ...string) ([]byte, error) {
 		return nil, newXraySessionQueryError(SessionEvidenceIssuePermissionDenied, "Xray API command access was denied inside the container")
 	}
 
@@ -440,7 +441,7 @@ func TestXraySessionEvidenceProviderReturnsObservedSessionsFromOnlineIPEvidence(
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
+	provider.RunAPICommand = func(_ context.Context, _ string, _ string, _ time.Duration, command string, args ...string) ([]byte, error) {
 		switch command {
 		case "statsgetallonlineusers":
 			return []byte(`{"users":["user-a"]}`), nil
@@ -489,7 +490,7 @@ func TestXraySessionEvidenceProviderFlagsInvalidQueryEvidence(t *testing.T) {
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
+	provider.RunAPICommand = func(_ context.Context, _ string, _ string, _ time.Duration, command string, args ...string) ([]byte, error) {
 		switch command {
 		case "statsgetallonlineusers":
 			return []byte(`{"users":["user-a"]}`), nil
@@ -529,7 +530,7 @@ func TestXraySessionEvidenceProviderReturnsMultipleObservedSessionsFromOnlineIPs
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
+	provider.RunAPICommand = func(_ context.Context, _ string, _ string, _ time.Duration, command string, args ...string) ([]byte, error) {
 		switch command {
 		case "statsgetallonlineusers":
 			return []byte(`{"users":["user-b","user-a"]}`), nil
@@ -563,9 +564,9 @@ func TestXraySessionEvidenceProviderReturnsMultipleObservedSessionsFromOnlineIPs
 	if len(result.Evidence) != 3 {
 		t.Fatalf("expected three observed sessions, got %#v", result)
 	}
-	if result.Evidence[0].Session.ID != "xray-online-ip:user-a:203.0.113.10" ||
-		result.Evidence[1].Session.ID != "xray-online-ip:user-b:203.0.113.11" ||
-		result.Evidence[2].Session.ID != "xray-online-ip:user-b:203.0.113.12" {
+	if result.Evidence[0].Session.ID != "xray-online-ip:user-a|203.0.113.10" ||
+		result.Evidence[1].Session.ID != "xray-online-ip:user-b|203.0.113.11" ||
+		result.Evidence[2].Session.ID != "xray-online-ip:user-b|203.0.113.12" {
 		t.Fatalf("expected deterministic evidence ordering, got %#v", result.Evidence)
 	}
 }
@@ -582,7 +583,7 @@ func TestXraySessionEvidenceProviderReportsInsufficientWhenOnlineUserHasNoIPEntr
 		},
 	})
 	provider.ProbeEndpoint = func(context.Context, APIEndpoint) error { return nil }
-	provider.RunAPICommand = func(_ context.Context, _ string, command string, args ...string) ([]byte, error) {
+	provider.RunAPICommand = func(_ context.Context, _ string, _ string, _ time.Duration, command string, args ...string) ([]byte, error) {
 		switch command {
 		case "statsgetallonlineusers":
 			return []byte(`{"users":["user-a"]}`), nil

@@ -16,20 +16,21 @@ func (a App) newDiscoverCommand() command {
 		summary:     "Discover Xray runtime targets",
 		usage:       buildinfo.BinaryName + " discover [--format text|json]",
 		description: "Discover Xray runtime targets through the configured discovery service.",
+		category:    commandCategoryCore,
 	}
 
 	cmd.help = func(w io.Writer) {
 		writeDiscoverHelp(w, cmd)
 	}
 
-	cmd.run = func(args []string, streams commandIO) int {
-		return a.runDiscover(args, streams, cmd)
+	cmd.run = func(ctx context.Context, args []string, streams commandIO) int {
+		return a.runDiscover(ctx, args, streams, cmd)
 	}
 
 	return cmd
 }
 
-func (a App) runDiscover(args []string, streams commandIO, cmd command) int {
+func (a App) runDiscover(ctx context.Context, args []string, streams commandIO, cmd command) int {
 	flags := flag.NewFlagSet(cmd.name, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
@@ -54,7 +55,10 @@ func (a App) runDiscover(args []string, streams commandIO, cmd command) int {
 		return writeCommandUsageError(streams.stderr, cmd, "unsupported output format %q", outputFormat)
 	}
 
-	result, err := a.discovery.Discover(context.Background(), discovery.Request{})
+	streams.diag.Infof(logPhaseDiscovery, "discovering Xray runtime targets")
+	streams.diag.Debugf(logPhaseDiscovery, "running discovery for output format %q", format)
+
+	result, err := a.discovery.Discover(ctx, discovery.Request{})
 	if err != nil {
 		streams.diag.Errorf(logPhaseDiscovery, "discovery failed: %s", err)
 		return exitCodeFailure

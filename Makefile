@@ -12,7 +12,15 @@ VERSION ?= $(strip $(shell cat $(VERSION_FILE) 2>/dev/null || printf 'dev'))
 VERSION_CORE := $(if $(filter v%,$(VERSION)),$(patsubst v%,%,$(VERSION)),$(VERSION))
 VERSION_TAG := v$(VERSION_CORE)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
-BUILD_TIME ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+# BUILD_TIME stamps the binary's build time. The -d argument is added only when
+# SOURCE_DATE_EPOCH is set, so:
+#   - set to a valid epoch -> that UTC instant is used (reproducible build);
+#   - unset                -> the current UTC time is used (normal build);
+#   - set but invalid (or date(1) lacks GNU -d, e.g. macOS/BSD) -> the first
+#     date(1) fails and the `|| date -u` fallback yields the current UTC time so
+#     the build never breaks.
+# Reproducible builds via SOURCE_DATE_EPOCH require GNU date (the Linux target).
+BUILD_TIME ?= $(shell date -u $${SOURCE_DATE_EPOCH:+-d @$$SOURCE_DATE_EPOCH} '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 BIN_DIR ?= bin
 DIST_DIR ?= dist
@@ -25,16 +33,21 @@ GO_LDFLAGS := -X $(BUILDINFO_PKG).Version=$(VERSION_TAG) -X $(BUILDINFO_PKG).Com
 LINUX_AMD64_PACKAGE := $(DIST_DIR)/$(APP)_$(VERSION_TAG)_linux_amd64.tar.gz
 LINUX_ARM64_PACKAGE := $(DIST_DIR)/$(APP)_$(VERSION_TAG)_linux_arm64.tar.gz
 PACKAGE_MANIFEST := PACKAGE-MANIFEST.txt
+CHECKSUM_MANIFEST := SHA256SUMS
 
 .DEFAULT_GOAL := help
 
-.PHONY: help fmt test build clean package package-linux-amd64 package-linux-arm64 check validate-version package-contract-check verify-packages
+.PHONY: help fmt test test-race vet vuln build clean package package-linux-amd64 package-linux-arm64 check validate-version package-contract-check verify-packages shellcheck
 
 help:
 	@printf '%s\n' \
 		'RayLimit maintainer targets:' \
 		'  make fmt                 Run gofmt on cmd and internal packages' \
-		'  make test                Run the full Go test suite' \
+		'  make test                Run go vet then the full Go test suite' \
+		'  make test-race           Run the Go test suite with the race detector (slower)' \
+		'  make vet                 Run go vet across all packages' \
+		'  make vuln                Run govulncheck across all packages' \
+		'  make shellcheck          Run shellcheck on the release shell scripts' \
 		'  make build               Build the host binary at bin/raylimit' \
 		'  make package             Build Linux amd64 and arm64 release archives in dist/' \
 		'  make package-linux-amd64 Build the Linux amd64 release archive' \
@@ -46,6 +59,7 @@ help:
 		'  dist/raylimit_v<version>_linux_<arch>/' \
 		'    raylimit' \
 		'    PACKAGE-MANIFEST.txt' \
+		'    SHA256SUMS' \
 		'    README.md' \
 		'    LICENSE' \
 		'    VERSION' \
@@ -61,8 +75,20 @@ help:
 fmt:
 	gofmt -w ./cmd ./internal
 
-test:
+vet:
+	$(GO) vet ./...
+
+test: vet
 	$(GO) test ./...
+
+test-race:
+	$(GO) test -race ./...
+
+vuln:
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+shellcheck:
+	shellcheck -x scripts/*.sh
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -126,6 +152,7 @@ package-one: validate-version package-contract-check
 		"updater=scripts/update.sh" \
 		"uninstaller=scripts/uninstall.sh" \
 		"helper=scripts/installer-common.sh" \
+		"checksums=$(CHECKSUM_MANIFEST)" \
 		> "$$manifest"; \
 	$(INSTALL) -m 0644 README.md "$$pkg_dir/README.md"; \
 	$(INSTALL) -m 0644 LICENSE "$$pkg_dir/LICENSE"; \
@@ -134,6 +161,8 @@ package-one: validate-version package-contract-check
 	$(INSTALL) -m 0755 scripts/update.sh "$$pkg_dir/scripts/update.sh"; \
 	$(INSTALL) -m 0755 scripts/uninstall.sh "$$pkg_dir/scripts/uninstall.sh"; \
 	$(INSTALL) -m 0755 scripts/installer-common.sh "$$pkg_dir/scripts/installer-common.sh"; \
+	( cd "$$pkg_dir" && find . -type f ! -name '$(CHECKSUM_MANIFEST)' | LC_ALL=C sort | sed 's|^\./||' | xargs $(SHA256SUM) > "$(CHECKSUM_MANIFEST)" ); \
+	chmod 0644 "$$pkg_dir/$(CHECKSUM_MANIFEST)"; \
 	$(TAR) -C "$(DIST_DIR)" -czf "$$archive_tmp" "$$pkg_name"; \
 	mv "$$archive_tmp" "$$archive"; \
 	(cd "$(DIST_DIR)" && $(SHA256SUM) "$$pkg_name.tar.gz" > "$$(basename "$$checksum_tmp")"); \
@@ -158,6 +187,8 @@ verify-packages: validate-version
 		test -f "$$pkg_dir/scripts/update.sh" || { echo "error: missing $$pkg_dir/scripts/update.sh" >&2; exit 1; }; \
 		test -f "$$pkg_dir/scripts/uninstall.sh" || { echo "error: missing $$pkg_dir/scripts/uninstall.sh" >&2; exit 1; }; \
 		test -f "$$pkg_dir/scripts/installer-common.sh" || { echo "error: missing $$pkg_dir/scripts/installer-common.sh" >&2; exit 1; }; \
+		test -f "$$pkg_dir/$(CHECKSUM_MANIFEST)" || { echo "error: missing $$pkg_dir/$(CHECKSUM_MANIFEST)" >&2; exit 1; }; \
+		( cd "$$pkg_dir" && $(SHA256SUM) -c "$(CHECKSUM_MANIFEST)" >/dev/null ) || { echo "error: $$pkg_dir/$(CHECKSUM_MANIFEST) verification failed" >&2; exit 1; }; \
 		$(TAR) -tzf "$$archive" | grep -Fx "$$pkg_name/$(PACKAGE_MANIFEST)" >/dev/null || { echo "error: $$archive is missing $(PACKAGE_MANIFEST)" >&2; exit 1; }; \
 		$(TAR) -tzf "$$archive" | grep -Fx "$$pkg_name/scripts/install.sh" >/dev/null || { echo "error: $$archive is missing scripts/install.sh" >&2; exit 1; }; \
 		$(TAR) -tzf "$$archive" | grep -Fx "$$pkg_name/scripts/update.sh" >/dev/null || { echo "error: $$archive is missing scripts/update.sh" >&2; exit 1; }; \

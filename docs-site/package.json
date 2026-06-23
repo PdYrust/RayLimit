@@ -1,7 +1,7 @@
 {
   "name": "raylimit-docs-site",
   "private": true,
-  "version": "0.3.0-beta",
+  "version": "0.4.0-beta",
   "scripts": {
     "assets": "node scripts/generate-brand-assets.mjs",
     "build": "next build",

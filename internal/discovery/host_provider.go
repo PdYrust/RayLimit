@@ -28,7 +28,14 @@ func NewHostProvider() HostProvider {
 
 // NewDefaultService returns the default discovery service used by the CLI.
 func NewDefaultService() Service {
-	return NewService(NewHostProvider(), NewDockerProvider())
+	return NewDefaultServiceWithContainerCLI("")
+}
+
+// NewDefaultServiceWithContainerCLI returns the default discovery service using
+// the given container CLI for the Docker provider. An empty name uses the
+// default ("docker").
+func NewDefaultServiceWithContainerCLI(cli string) Service {
+	return NewService(NewHostProvider(), NewDockerProviderWithCLI(cli))
 }
 
 func (p HostProvider) Name() string {
@@ -260,18 +267,18 @@ func detectXrayProcess(snapshot processSnapshot) (DetectionEvidence, bool) {
 	reasons := make([]string, 0, 3)
 	confidence := DetectionConfidence("")
 
-	if matchesExactBinaryName(snapshot.ExecutablePath) {
-		reasons = append(reasons, "executable name matched xray")
+	if matchesXrayFamilyBinary(snapshot.ExecutablePath) {
+		reasons = append(reasons, fmt.Sprintf("executable name %q matched xray family", normalizeBinaryBasename(snapshot.ExecutablePath)))
 		confidence = DetectionConfidenceHigh
 	}
 
-	if len(snapshot.CommandLine) > 0 && matchesExactBinaryName(snapshot.CommandLine[0]) {
-		reasons = append(reasons, "command name matched xray")
+	if len(snapshot.CommandLine) > 0 && matchesXrayFamilyBinary(snapshot.CommandLine[0]) {
+		reasons = append(reasons, fmt.Sprintf("command name %q matched xray family", normalizeBinaryBasename(snapshot.CommandLine[0])))
 		confidence = DetectionConfidenceHigh
 	}
 
-	if snapshot.ProcessName == "xray" {
-		reasons = append(reasons, "process name matched xray")
+	if matchesXrayFamilyBinary(snapshot.ProcessName) {
+		reasons = append(reasons, fmt.Sprintf("process name %q matched xray family", normalizeBinaryBasename(snapshot.ProcessName)))
 		if confidence == "" {
 			confidence = DetectionConfidenceMedium
 		}
@@ -285,10 +292,6 @@ func detectXrayProcess(snapshot processSnapshot) (DetectionEvidence, bool) {
 		Confidence: confidence,
 		Reasons:    reasons,
 	}, true
-}
-
-func matchesExactBinaryName(value string) bool {
-	return basenameOrEmpty(value) == "xray"
 }
 
 func chooseProcessName(snapshot processSnapshot) string {

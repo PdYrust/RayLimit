@@ -40,8 +40,9 @@ const (
 
 const defaultDiagnosticLogLevel = logLevelError
 
-// loggingModel documents the intended CLI logging contract without introducing a
-// full logging implementation yet.
+// loggingModel documents the CLI logging contract that diagnosticLogger below
+// implements. The struct is read by tests and by newCommandIO to derive the
+// default diagnostic level and stream routing.
 type loggingModel struct {
 	DefaultLevel     logLevel
 	ResultStream     string
@@ -276,10 +277,26 @@ func formatLogFieldValue(value string) string {
 	if value == "" {
 		return `""`
 	}
-	if strings.ContainsAny(value, " \t\n\r\"|=") {
+	// Quote whenever the value contains whitespace, the field delimiters, shell
+	// metacharacters, or any control character, so a diagnostic line cannot be
+	// used to forge additional fields or inject shell/ANSI sequences if logs are
+	// later parsed by a shell pipeline.
+	if strings.ContainsAny(value, " \t\n\r\"|=;$&`(){}\\") || containsControlCharacter(value) {
 		return strconv.Quote(value)
 	}
 	return value
+}
+
+// containsControlCharacter reports whether the value contains any ASCII control
+// character (below 0x20), including embedded NUL, ESC, and newlines.
+func containsControlCharacter(value string) bool {
+	for _, r := range value {
+		if r < 0x20 {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (streams commandIO) withDiagnosticLevel(level logLevel) commandIO {

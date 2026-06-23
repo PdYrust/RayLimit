@@ -155,7 +155,7 @@ func TestDockerProviderHandlesPermissionDeniedDockerAccessGracefully(t *testing.
 func TestDockerProviderHandlesMissingDockerCLIGracefully(t *testing.T) {
 	provider := DockerProvider{
 		listContainers: func(context.Context) ([]dockerContainerSummary, error) {
-			return nil, dockerNotInstalledIssue(errors.New("executable file not found"))
+			return nil, containerCLINotInstalledIssue(defaultContainerCLI, errors.New("executable file not found"))
 		},
 	}
 

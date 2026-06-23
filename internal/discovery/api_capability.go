@@ -14,8 +14,14 @@ type fileReadFunc func(path string) ([]byte, error)
 type dirReadFunc func(path string) ([]os.DirEntry, error)
 type pathStatFunc func(path string) (os.FileInfo, error)
 
+// statsUserOnlineServiceName is the Xray StatsService companion service that the
+// Sanaei fork requires in the api.services list before statsgetallonlineusers
+// returns live online-user evidence. It is matched case-insensitively.
+const statsUserOnlineServiceName = "StatsUserOnline"
+
 // APICapabilityDetector inspects local runtime metadata for conservative API capability hints.
 type APICapabilityDetector struct {
+	containerCLI  string
 	readFile      fileReadFunc
 	readDir       dirReadFunc
 	statPath      pathStatFunc
@@ -26,6 +32,7 @@ type apiCapabilityState struct {
 	sawReadableConfig bool
 	hadConfigIssues   bool
 	apiServices       bool
+	statsUserOnline   bool
 	apiTags           map[string]struct{}
 	endpointsByTag    map[string][]APIEndpoint
 	directAPIInbound  bool
@@ -87,12 +94,15 @@ type xrayRoutingRule struct {
 	OutboundTag string   `json:"outboundTag"`
 }
 
-// NewAPICapabilityDetector returns the default API capability detector.
-func NewAPICapabilityDetector() APICapabilityDetector {
+// NewAPICapabilityDetectorWithContainerCLI returns an API capability detector
+// that inspects containers through the given container CLI (for example
+// "podman"). An empty name uses the default ("docker").
+func NewAPICapabilityDetectorWithContainerCLI(cli string) APICapabilityDetector {
 	return APICapabilityDetector{
-		readFile: os.ReadFile,
-		readDir:  os.ReadDir,
-		statPath: os.Stat,
+		containerCLI: normalizeContainerCLI(cli),
+		readFile:     os.ReadFile,
+		readDir:      os.ReadDir,
+		statPath:     os.Stat,
 	}
 }
 
@@ -148,9 +158,10 @@ func (d APICapabilityDetector) EnrichTarget(ctx context.Context, target RuntimeT
 				}
 
 				target.APICapability = &APICapability{
-					Status:     buildAPICapabilityStatus(state),
-					Reason:     buildAPICapabilityReason(state),
-					Limitation: buildAPICapabilityLimitation(state),
+					Status:          buildAPICapabilityStatus(state),
+					Reason:          buildAPICapabilityReason(state),
+					Limitation:      buildAPICapabilityLimitation(state),
+					StatsUserOnline: buildStatsUserOnlineState(state),
 				}
 
 				if len(target.APIEndpoints) == 0 {
@@ -274,6 +285,13 @@ func (d APICapabilityDetector) inspectConfigFile(ctx context.Context, filePath s
 	if document.API != nil && len(document.API.Services) > 0 {
 		state.apiServices = true
 
+		for _, service := range document.API.Services {
+			if strings.EqualFold(strings.TrimSpace(service), statsUserOnlineServiceName) {
+				state.statsUserOnline = true
+				break
+			}
+		}
+
 		if tag := strings.TrimSpace(document.API.Tag); tag != "" {
 			state.apiTags[tag] = struct{}{}
 		}
@@ -335,7 +353,10 @@ func (d APICapabilityDetector) withDefaults() APICapabilityDetector {
 		d.statPath = os.Stat
 	}
 	if d.inspectDocker == nil {
-		d.inspectDocker = inspectDockerContainers
+		cli := normalizeContainerCLI(d.containerCLI)
+		d.inspectDocker = func(ctx context.Context, ids []string) (map[string]dockerContainerInspect, error) {
+			return inspectDockerContainers(ctx, ids, cli)
+		}
 	}
 
 	return d
@@ -393,7 +414,7 @@ func mapAPIEndpointsToPublishedPorts(endpoints []APIEndpoint, ports []dockerPort
 			reachable = appendUniqueAPIEndpoint(reachable, APIEndpoint{
 				Name:    endpoint.Name,
 				Network: EndpointNetworkTCP,
-				Address: normalizePublishedHost(binding.HostIP),
+				Address: normalizeWildcardListenHost(binding.HostIP),
 				Port:    binding.HostPort,
 				TLS:     endpoint.TLS,
 			})
@@ -405,16 +426,6 @@ func mapAPIEndpointsToPublishedPorts(endpoints []APIEndpoint, ports []dockerPort
 	}
 
 	return reachable
-}
-
-func normalizePublishedHost(host string) string {
-	host = strings.TrimSpace(host)
-	switch host {
-	case "", "0.0.0.0", "::", "[::]":
-		return "127.0.0.1"
-	default:
-		return host
-	}
 }
 
 func inspectionConfigPaths(target RuntimeTarget) []string {
@@ -445,7 +456,12 @@ func buildAPICapabilityStatus(state apiCapabilityState) APICapabilityStatus {
 
 func buildAPICapabilityLimitation(state apiCapabilityState) APICapabilityLimitation {
 	switch buildAPICapabilityStatus(state) {
-	case APICapabilityStatusLikelyConfigured, APICapabilityStatusNotEvident:
+	case APICapabilityStatusLikelyConfigured:
+		if state.apiServices && !state.statsUserOnline {
+			return APICapabilityLimitationStatsUserOnlineNotEnabled
+		}
+		return ""
+	case APICapabilityStatusNotEvident:
 		return ""
 	default:
 		if len(state.permissionDenied) != 0 {
@@ -459,6 +475,18 @@ func buildAPICapabilityLimitation(state apiCapabilityState) APICapabilityLimitat
 		}
 		return APICapabilityLimitationMissingConfigHint
 	}
+}
+
+// buildStatsUserOnlineState reports the observed StatsUserOnline enablement as a
+// three-state pointer: nil when no api.services list was read, otherwise a
+// pointer to whether the StatsUserOnline service was present.
+func buildStatsUserOnlineState(state apiCapabilityState) *bool {
+	if !state.apiServices {
+		return nil
+	}
+
+	enabled := state.statsUserOnline
+	return &enabled
 }
 
 func buildAPICapabilityReason(state apiCapabilityState) string {

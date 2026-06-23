@@ -16,7 +16,7 @@ func TestAPICapabilityDetectorMarksUnknownWhenNoConfigHintExists(t *testing.T) {
 		HostProcess: &HostProcessCandidate{PID: 1001},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -113,7 +113,7 @@ func TestAPICapabilityDetectorDetectsAPIFromReadableConfig(t *testing.T) {
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAPICapabilityDetectorUsesResolvedHostProcessConfigHints(t *testing.T) {
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -335,7 +335,7 @@ func TestAPICapabilityDetectorDerivesAPIEndpointFromRoutingRule(t *testing.T) {
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -379,7 +379,7 @@ func TestAPICapabilityDetectorMarksNotEvidentWhenReadableConfigHasNoAPI(t *testi
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -431,7 +431,7 @@ func TestAPICapabilityDetectorLeavesAPIEndpointUnknownWhenRoutingDoesNotReachAPI
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -463,7 +463,7 @@ func TestAPICapabilityDetectorReturnsUnknownForPartialConfigHints(t *testing.T) 
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -502,7 +502,7 @@ func TestAPICapabilityDetectorAggregatesConfigDirectoryHints(t *testing.T) {
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -546,7 +546,7 @@ func TestAPICapabilityDetectorDetectsAPIFromDockerConfigHints(t *testing.T) {
 		},
 	}
 
-	enriched, err := NewAPICapabilityDetector().EnrichTarget(context.Background(), target)
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -557,5 +557,95 @@ func TestAPICapabilityDetectorDetectsAPIFromDockerConfigHints(t *testing.T) {
 
 	if len(enriched.APIEndpoints) != 1 || enriched.APIEndpoints[0].Port != 10085 {
 		t.Fatalf("unexpected api endpoints: %#v", enriched.APIEndpoints)
+	}
+}
+
+func TestAPICapabilityDetectorFlagsMissingStatsUserOnlineService(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	config := `{
+  "api": {
+    "tag": "api",
+    "services": ["StatsService"]
+  },
+  "inbounds": [
+    {
+      "tag": "api",
+      "listen": "127.0.0.1",
+      "port": 10085
+    }
+  ]
+}`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	target := RuntimeTarget{
+		Source:   DiscoverySourceHostProcess,
+		Identity: RuntimeIdentity{Name: "edge-a", Binary: "xray"},
+		HostProcess: &HostProcessCandidate{
+			PID:         1001,
+			ConfigPaths: []string{configPath},
+		},
+	}
+
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if enriched.APICapability == nil || enriched.APICapability.Status != APICapabilityStatusLikelyConfigured {
+		t.Fatalf("expected likely configured api capability, got %#v", enriched.APICapability)
+	}
+	if enriched.APICapability.Limitation != APICapabilityLimitationStatsUserOnlineNotEnabled {
+		t.Fatalf("expected stats-user-online-not-enabled limitation, got %#v", enriched.APICapability)
+	}
+	if enriched.APICapability.StatsUserOnline == nil || *enriched.APICapability.StatsUserOnline {
+		t.Fatalf("expected StatsUserOnline to be observed as not enabled, got %#v", enriched.APICapability)
+	}
+}
+
+func TestAPICapabilityDetectorAcceptsStatsUserOnlineServiceCaseInsensitively(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	config := `{
+  "api": {
+    "tag": "api",
+    "services": ["StatsService", "statsuseronline"]
+  },
+  "inbounds": [
+    {
+      "tag": "api",
+      "listen": "127.0.0.1",
+      "port": 10085
+    }
+  ]
+}`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	target := RuntimeTarget{
+		Source:   DiscoverySourceHostProcess,
+		Identity: RuntimeIdentity{Name: "edge-a", Binary: "xray"},
+		HostProcess: &HostProcessCandidate{
+			PID:         1001,
+			ConfigPaths: []string{configPath},
+		},
+	}
+
+	enriched, err := NewAPICapabilityDetectorWithContainerCLI("docker").EnrichTarget(context.Background(), target)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if enriched.APICapability == nil || enriched.APICapability.Status != APICapabilityStatusLikelyConfigured {
+		t.Fatalf("expected likely configured api capability, got %#v", enriched.APICapability)
+	}
+	if enriched.APICapability.Limitation != "" {
+		t.Fatalf("expected no api capability limitation, got %#v", enriched.APICapability)
+	}
+	if enriched.APICapability.StatsUserOnline == nil || !*enriched.APICapability.StatsUserOnline {
+		t.Fatalf("expected StatsUserOnline to be observed as enabled, got %#v", enriched.APICapability)
 	}
 }

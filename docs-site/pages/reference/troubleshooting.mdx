@@ -11,6 +11,35 @@ Typical signal:
 
 Install the Linux `tc` userspace tool and verify it is in `PATH`.
 
+## `parse class state: invalid character 'c' looking for beginning of value`
+
+This means the `tc` binary did not emit JSON for `-j` (some builds silently ignore the flag and print plain text). Current RayLimit auto-detects this and falls back to plain-text parsing of `tc` and `nft` output, so you should not see this error on a current build.
+
+If you still hit it, you are on an older RayLimit build that assumed JSON output — upgrade. If a custom `tc` lives at a non-standard path, point RayLimit at it with `--tc-binary` (env `RAYLIMIT_TC_BINARY`).
+
+## `StatsUserOnline service not enabled` (Sanaei fork only)
+
+The Sanaei fork requires the `StatsUserOnline` service in the Xray config's `api.services` array before live online-user queries return evidence. When it is missing, RayLimit now reports this typed error instead of silently returning "no sessions".
+
+Add the service and restart Xray:
+
+```json
+{
+  "api": {
+    "tag": "api",
+    "services": ["StatsService", "StatsUserOnline"]
+  }
+}
+```
+
+This gate applies only to runtimes detected as the Sanaei fork; vanilla Xray is unaffected.
+
+## `RTNETLINK answers: File exists` on re-apply
+
+This used to happen when applying one direction (for example upload) and then the other (download) on the same device. It is now handled by reconcile-aware re-apply plus an execution-time backstop, so the second apply succeeds without tearing down the first. See [limit › Re-Applying Without Teardown](../commands/limit#re-applying-without-teardown).
+
+If you still see it, you are on an older build — upgrade.
+
 ## Runtime Selection Does Not Match
 
 If `inspect` or `limit` cannot find the target:

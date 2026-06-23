@@ -11,10 +11,9 @@
 #   scripts/uninstall.sh
 #   scripts/installer-common.sh
 
-# shellcheck disable=SC2034
-
 RAYLIMIT_APP_NAME=${RAYLIMIT_APP_NAME:-raylimit}
 RAYLIMIT_MANIFEST_NAME=${RAYLIMIT_MANIFEST_NAME:-install.env}
+RAYLIMIT_CHECKSUM_NAME=${RAYLIMIT_CHECKSUM_NAME:-SHA256SUMS}
 
 raylimit_log() {
     printf '%s\n' "$*"
@@ -51,14 +50,6 @@ raylimit_resolve_self_path() {
     esac
 }
 
-raylimit_self_dir() {
-    self_path=$1
-    self_dir=$(dirname "$self_path")
-    (
-        cd "$self_dir" >/dev/null 2>&1 && pwd -P
-    ) || raylimit_die "failed to resolve script directory for $self_path"
-}
-
 raylimit_finalize_layout_defaults() {
     : "${DESTDIR:=}"
     : "${PREFIX:=/usr/local}"
@@ -70,6 +61,7 @@ raylimit_finalize_layout_defaults() {
     : "${RAYLIMIT_PACKAGE_DIR:=$RAYLIMIT_SCRIPT_ROOT}"
     : "${RAYLIMIT_BINARY_PATH:=}"
     : "${RAYLIMIT_NO_SUDO:=0}"
+    : "${RAYLIMIT_SKIP_CHECKSUM:=0}"
 }
 
 raylimit_stage_path() {
@@ -113,6 +105,30 @@ raylimit_require_package_file() {
     printf '%s\n' "$path"
 }
 
+raylimit_verify_package_checksums() {
+    if [ "$RAYLIMIT_SKIP_CHECKSUM" = "1" ]; then
+        raylimit_warn "skipping release checksum verification (requested via --skip-checksum)"
+        return 0
+    fi
+
+    checksum_path=$RAYLIMIT_PACKAGE_DIR/$RAYLIMIT_CHECKSUM_NAME
+    if [ ! -f "$checksum_path" ]; then
+        raylimit_die "release checksum file is missing: $checksum_path (rerun with --skip-checksum to bypass verification)"
+    fi
+
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        raylimit_die "sha256sum is required to verify the release package; install coreutils or rerun with --skip-checksum"
+    fi
+
+    raylimit_log "Verifying release checksums ($RAYLIMIT_CHECKSUM_NAME)"
+    if ! (
+        cd "$RAYLIMIT_PACKAGE_DIR" >/dev/null 2>&1 &&
+            sha256sum -c "$RAYLIMIT_CHECKSUM_NAME" >/dev/null
+    ); then
+        raylimit_die "release checksum verification failed; the package may be corrupt or tampered with"
+    fi
+}
+
 raylimit_validate_release_package() {
     raylimit_require_dir "$RAYLIMIT_PACKAGE_DIR"
     raylimit_require_package_file README.md >/dev/null
@@ -121,6 +137,7 @@ raylimit_validate_release_package() {
     raylimit_require_package_file scripts/update.sh >/dev/null
     raylimit_require_package_file scripts/uninstall.sh >/dev/null
     raylimit_require_package_file scripts/installer-common.sh >/dev/null
+    raylimit_verify_package_checksums
 }
 
 raylimit_read_package_version() {
@@ -163,8 +180,36 @@ raylimit_nearest_existing_parent() {
 
 raylimit_target_writable() {
     target=$1
+    if [ -e "$target" ]; then
+        # The target already exists; probe it directly. For a symlink this
+        # follows the link to the real file that mv/cp will write through.
+        [ -w "$target" ]
+        return
+    fi
+
     parent=$(raylimit_nearest_existing_parent "$target")
+    # Resolve symlinks on the nearest existing parent so a writable-looking
+    # link that points at a read-only location is judged by its real target.
+    if command -v readlink >/dev/null 2>&1; then
+        resolved=$(readlink -f "$parent" 2>/dev/null || true)
+        [ -n "$resolved" ] && parent=$resolved
+    fi
     [ -w "$parent" ]
+}
+
+# Reports success when the logical path lives under a conventional system
+# location (/usr, /etc, /var). Installs into these trees default to requiring
+# elevated privileges even when a writability probe looks permissive, because
+# the cost of a spurious sudo prompt is far lower than a failed mv mid-install.
+raylimit_is_system_path() {
+    case "$1" in
+        /usr|/usr/*|/etc|/etc/*|/var|/var/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 raylimit_maybe_reexec_with_sudo() {
@@ -174,7 +219,7 @@ raylimit_maybe_reexec_with_sudo() {
 
     need_sudo=0
     while [ "$#" -gt 0 ]; do
-        if ! raylimit_target_writable "$1"; then
+        if raylimit_is_system_path "$1" || ! raylimit_target_writable "$1"; then
             need_sudo=1
         fi
         shift
@@ -195,6 +240,7 @@ raylimit_maybe_reexec_with_sudo() {
             RAYLIMIT_PACKAGE_DIR="$RAYLIMIT_PACKAGE_DIR" \
             RAYLIMIT_BINARY_PATH="$RAYLIMIT_BINARY_PATH" \
             RAYLIMIT_NO_SUDO=1 \
+            RAYLIMIT_SKIP_CHECKSUM="$RAYLIMIT_SKIP_CHECKSUM" \
             sh "$RAYLIMIT_SELF_PATH"
     fi
 
@@ -239,14 +285,22 @@ raylimit_write_manifest() {
 
     raylimit_ensure_dir "$manifest_dir"
     tmp=$(mktemp "$manifest_dir/.${RAYLIMIT_MANIFEST_NAME}.tmp.XXXXXX") || raylimit_die "failed to create temporary manifest"
-    cat >"$tmp" <<EOF
-RAYLIMIT_VERSION=$version
-RAYLIMIT_PLATFORM=$RAYLIMIT_PLATFORM
-RAYLIMIT_ARCH=$RAYLIMIT_ARCH
-RAYLIMIT_BINARY=$BINDIR/$RAYLIMIT_APP_NAME
-RAYLIMIT_SHARE_DIR=$RAYLIMIT_SHARE_DIR
-RAYLIMIT_ETC_DIR=$RAYLIMIT_ETC_DIR
-EOF
+    # Emit each entry with printf so the values are written verbatim. The values
+    # are layout paths derived from caller-supplied flags; they are NOT evaluated
+    # by the shell here and MUST be read back as literal strings.
+    {
+        printf '%s\n' '# RayLimit installation manifest.'
+        printf '%s\n' '# Values are stored literally and are not evaluated when read back.'
+        printf '%s=%s\n' RAYLIMIT_VERSION "$version"
+        printf '%s=%s\n' RAYLIMIT_PLATFORM "$RAYLIMIT_PLATFORM"
+        printf '%s=%s\n' RAYLIMIT_ARCH "$RAYLIMIT_ARCH"
+        printf '%s=%s\n' RAYLIMIT_BINARY "$BINDIR/$RAYLIMIT_APP_NAME"
+        printf '%s=%s\n' RAYLIMIT_SHARE_DIR "$RAYLIMIT_SHARE_DIR"
+        printf '%s=%s\n' RAYLIMIT_ETC_DIR "$RAYLIMIT_ETC_DIR"
+    } >"$tmp" || {
+        rm -f "$tmp"
+        raylimit_die "failed to write manifest contents"
+    }
     chmod 0644 "$tmp" || {
         rm -f "$tmp"
         raylimit_die "failed to set manifest permissions"
@@ -267,12 +321,18 @@ raylimit_load_manifest() {
     RAYLIMIT_MANIFEST_ETC_DIR=
 
     raylimit_require_file "$manifest_path"
+    manifest_cr=$(printf '\r')
     while IFS='=' read -r key value; do
+        # Tolerate manifests saved with CRLF line endings by stripping a
+        # trailing carriage return from both the key and the value.
+        key=${key%"$manifest_cr"}
+        value=${value%"$manifest_cr"}
         case "$key" in
             ''|\#*)
                 continue
                 ;;
             RAYLIMIT_VERSION)
+                # shellcheck disable=SC2034  # read back by update.sh/uninstall.sh after sourcing
                 RAYLIMIT_MANIFEST_VERSION=$value
                 ;;
             RAYLIMIT_PLATFORM)

@@ -71,6 +71,7 @@ func (e Evaluation) WinningPolicies() []Match {
 		return append([]Match(nil), e.Winning...)
 	}
 
+	// Fallback supports Evaluation literals constructed without going through Evaluate.
 	winners := make([]Match, 0, len(e.Matches))
 	for _, match := range e.Matches {
 		if match.Winner {
@@ -88,6 +89,7 @@ func (e Evaluation) NonWinningPolicies() []Match {
 		return append([]Match(nil), e.NonWinning...)
 	}
 
+	// Fallback supports Evaluation literals constructed without going through Evaluate.
 	nonWinning := make([]Match, 0, len(e.Matches))
 	for _, match := range e.Matches {
 		if match.Winner {

@@ -30,10 +30,36 @@ type Snapshot struct {
 	QDiscs  []QDiscState  `json:"qdiscs,omitempty"`
 	Classes []ClassState  `json:"classes,omitempty"`
 	Filters []FilterState `json:"filters,omitempty"`
+
+	// ReadError, when non-nil, marks that tc state for the device could not be
+	// read this cycle (the inspector or parser failed). It is a soft-fail
+	// indicator: reconcile and control-loop callers treat such a snapshot as
+	// "defer this tick" rather than as genuinely empty state (which would
+	// otherwise re-apply every desired object on every tick). It is excluded
+	// from JSON because the error interface does not serialize meaningfully.
+	ReadError error `json:"-"`
+}
+
+// Unreadable reports whether the snapshot marks an unreadable tc state.
+func (s Snapshot) Unreadable() bool {
+	return s.ReadError != nil
+}
+
+// UnreadableSnapshot builds a soft-fail snapshot recording that tc state for the
+// device could not be read. Reconcile and control-loop callers treat it as a
+// "defer" signal rather than as empty observed state.
+func UnreadableSnapshot(device string, readErr error) Snapshot {
+	return Snapshot{Device: strings.TrimSpace(device), ReadError: readErr}
 }
 
 // Validate checks that the snapshot is internally consistent.
 func (s Snapshot) Validate() error {
+	if s.ReadError != nil {
+		// An unreadable snapshot is a soft-fail marker rather than a hard
+		// structural error, so it is accepted without validating the (empty)
+		// object slices. Callers inspect ReadError to decide whether to defer.
+		return nil
+	}
 	if err := validateDevice(s.Device); err != nil {
 		return err
 	}
@@ -531,14 +557,14 @@ func (i Inspector) Inspect(ctx context.Context, req InspectRequest) (Snapshot, [
 				result.Error = err.Error()
 			}
 			results = append(results, result)
-			return Snapshot{Device: strings.TrimSpace(req.Device)}, results, err
+			return Snapshot{Device: strings.TrimSpace(req.Device), ReadError: err}, results, err
 		}
 		results = append(results, result)
 	}
 
 	snapshot, err := ParseSnapshot(req.Device, results)
 	if err != nil {
-		return Snapshot{}, results, err
+		return Snapshot{Device: strings.TrimSpace(req.Device), ReadError: err}, results, err
 	}
 
 	return snapshot, results, nil
@@ -596,9 +622,13 @@ func ParseSnapshot(device string, results []Result) (Snapshot, error) {
 }
 
 func parseQDiscStates(stdout string) ([]QDiscState, error) {
+	if !tcOutputIsJSON(stdout) {
+		return parseQDiscStatesText(stdout)
+	}
+
 	entries, err := parseEntries(stdout)
 	if err != nil {
-		return nil, err
+		return nil, newTCStateParseError("qdisc", stdout)
 	}
 
 	states := make([]QDiscState, 0, len(entries))
@@ -614,9 +644,13 @@ func parseQDiscStates(stdout string) ([]QDiscState, error) {
 }
 
 func parseClassStates(stdout string) ([]ClassState, error) {
+	if !tcOutputIsJSON(stdout) {
+		return parseClassStatesText(stdout)
+	}
+
 	entries, err := parseEntries(stdout)
 	if err != nil {
-		return nil, err
+		return nil, newTCStateParseError("class", stdout)
 	}
 
 	states := make([]ClassState, 0, len(entries))
@@ -634,9 +668,13 @@ func parseClassStates(stdout string) ([]ClassState, error) {
 }
 
 func parseFilterStates(stdout string) ([]FilterState, error) {
+	if !tcOutputIsJSON(stdout) {
+		return parseFilterStatesText(stdout)
+	}
+
 	entries, err := parseEntries(stdout)
 	if err != nil {
-		return nil, err
+		return nil, newTCStateParseError("filter", stdout)
 	}
 
 	states := make([]FilterState, 0, len(entries))
@@ -705,8 +743,6 @@ func scalarStringField(entry map[string]any, key string) string {
 		if typed == float64(int64(typed)) {
 			return strconv.FormatInt(int64(typed), 10)
 		}
-	case json.Number:
-		return strings.TrimSpace(typed.String())
 	}
 
 	return ""
@@ -784,7 +820,7 @@ func parseBytesPerSecond(value any) (int64, bool) {
 	switch typed := value.(type) {
 	case string:
 		return parseBytesPerSecondString(typed)
-	case float64, json.Number:
+	case float64:
 		return parseInteger(typed)
 	case map[string]any:
 		if nested, ok := typed["bps"]; ok {
@@ -841,7 +877,9 @@ func parseBytesPerSecondString(value string) (int64, bool) {
 		return scaleBytesPerSecond(strings.TrimSuffix(normalized, unit.suffix), unit.multiplier, unit.bits)
 	}
 
-	return scaleBytesPerSecond(normalized, 1, true)
+	// No recognized unit suffix: do not guess bits-vs-bytes. tc rate strings
+	// always carry a unit, so an unmatched value is treated as unparsable.
+	return 0, false
 }
 
 func scaleBytesPerSecond(value string, multiplier float64, bits bool) (int64, bool) {
@@ -894,23 +932,18 @@ func parseUint32(value any) (uint32, bool) {
 			return 0, false
 		}
 		return uint32(parsed), true
-	case json.Number:
-		parsed, err := typed.Int64()
-		if err != nil || parsed < 0 || parsed > int64(^uint32(0)) {
-			return 0, false
-		}
-		return uint32(parsed), true
 	default:
 		return 0, false
 	}
 }
 
 func parseSignedInteger(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0, false
 	}
 
-	parsed, err := json.Number(value).Int64()
+	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		return 0, false
 	}

@@ -75,3 +75,31 @@ A path where `nftables` classifies traffic or restores marks and `tc fw` attache
 ## Managed State
 
 The `tc` and related backend objects that RayLimit can attribute to one selected subject and therefore reconcile or remove conservatively.
+
+## RuntimeIdentity
+
+The basic identity RayLimit records for a discovered runtime, including its name and detected binary basename. The binary name feeds prefix-match detection and binary-name resolution. See [Runtime Targeting](../core-concepts/runtime-targeting).
+
+## Sanaei Fork
+
+A fork of Xray whose binaries are named `sanaei*` (for example `sanaei-linux-amd64`). RayLimit detects it through the `sanaei` / `sanaei-core` prefixes and applies fork-specific behavior, such as the `StatsUserOnline` requirement.
+
+## StatsService
+
+The Xray API service that exposes traffic and connection statistics. It must be present in the config's `api.services` array for API-backed evidence.
+
+## StatsUserOnline
+
+A companion Xray API service that the Sanaei fork requires (in addition to `StatsService`) before live online-user queries return evidence. When it is absent on a detected fork, RayLimit reports a typed `StatsUserOnline service not enabled` error instead of a silent no-sessions result.
+
+## Mark Attachment
+
+The path where `nftables` classifies traffic or restores a packet mark and `tc fw` attaches the marked traffic to the selected class. Inbound and outbound use this model when the selector is concrete. Its apply path reconciles against observed state, which is what makes re-applying directions safe.
+
+## Idempotent Apply
+
+The property that re-applying an already-satisfied limit makes no destructive change. RayLimit achieves this through reconcile-aware apply plus an execution-time backstop that treats an "already exists" managed root qdisc as success rather than an error.
+
+## Plain-Text tc Fallback
+
+RayLimit prefers JSON (`tc -j` / `nft -j`) output but auto-detects when a binary ignores the flag and emits plain text, falling back to a plain-text parser. This keeps state inspection working on hosts whose `tc`/`nft` lack JSON support.

@@ -18,6 +18,29 @@ import (
 type dockerListFunc func(ctx context.Context) ([]dockerContainerSummary, error)
 type dockerInspectFunc func(ctx context.Context, ids []string) (map[string]dockerContainerInspect, error)
 
+// defaultContainerCLI is the container runtime CLI used when no override is
+// configured. It can be overridden (for example to "podman" or "nerdctl") so
+// non-Docker container engines are supported.
+const defaultContainerCLI = "docker"
+
+// dockerExecCommandContext and dockerLookPath are package variables so tests can
+// substitute container CLI process execution and resolution.
+var (
+	dockerExecCommandContext = exec.CommandContext
+	dockerLookPath           = exec.LookPath
+)
+
+// normalizeContainerCLI returns the configured container CLI name, falling back
+// to the default when unset.
+func normalizeContainerCLI(cli string) string {
+	cli = strings.TrimSpace(cli)
+	if cli == "" {
+		return defaultContainerCLI
+	}
+
+	return cli
+}
+
 type dockerContainerSummary struct {
 	ID      string
 	Name    string
@@ -80,15 +103,25 @@ type dockerInspectLine struct {
 
 // DockerProvider discovers Xray candidates from local Docker containers.
 type DockerProvider struct {
+	containerCLI      string
 	listContainers    dockerListFunc
 	inspectContainers dockerInspectFunc
 }
 
-// NewDockerProvider returns the default Docker discovery provider.
-func NewDockerProvider() DockerProvider {
+// NewDockerProviderWithCLI returns a Docker discovery provider that invokes the
+// given container CLI (for example "podman" or "nerdctl"). An empty name uses
+// the default ("docker").
+func NewDockerProviderWithCLI(cli string) DockerProvider {
+	cli = normalizeContainerCLI(cli)
+
 	return DockerProvider{
-		listContainers:    listDockerContainers,
-		inspectContainers: inspectDockerContainers,
+		containerCLI: cli,
+		listContainers: func(ctx context.Context) ([]dockerContainerSummary, error) {
+			return listDockerContainers(ctx, cli)
+		},
+		inspectContainers: func(ctx context.Context, ids []string) (map[string]dockerContainerInspect, error) {
+			return inspectDockerContainers(ctx, ids, cli)
+		},
 	}
 }
 
@@ -103,11 +136,17 @@ func (p DockerProvider) Source() DiscoverySource {
 func (p DockerProvider) Discover(ctx context.Context, _ Request) (ProviderResult, error) {
 	listContainers := p.listContainers
 	if listContainers == nil {
-		listContainers = listDockerContainers
+		cli := normalizeContainerCLI(p.containerCLI)
+		listContainers = func(ctx context.Context) ([]dockerContainerSummary, error) {
+			return listDockerContainers(ctx, cli)
+		}
 	}
 	inspectContainers := p.inspectContainers
 	if inspectContainers == nil {
-		inspectContainers = inspectDockerContainers
+		cli := normalizeContainerCLI(p.containerCLI)
+		inspectContainers = func(ctx context.Context, ids []string) (map[string]dockerContainerInspect, error) {
+			return inspectDockerContainers(ctx, ids, cli)
+		}
 	}
 
 	containers, err := listContainers(ctx)
@@ -146,7 +185,13 @@ func (p DockerProvider) Discover(ctx context.Context, _ Request) (ProviderResult
 	}
 
 	targets := make([]RuntimeTarget, 0, len(containers))
+	scanned := 0
 	for _, container := range containers {
+		if !dockerContainerEvaluable(container) {
+			continue
+		}
+		scanned++
+
 		target, ok := targetFromDockerContainer(container, inspected[container.ID])
 		if !ok {
 			continue
@@ -159,18 +204,22 @@ func (p DockerProvider) Discover(ctx context.Context, _ Request) (ProviderResult
 	if inspectIssue != nil {
 		result.Issues = append(result.Issues, *inspectIssue)
 	}
+	if len(targets) == 0 && scanned > 0 {
+		result.Issues = append(result.Issues, dockerNoMatchesIssue(scanned, len(targets)))
+	}
 
 	return result, nil
 }
 
-func listDockerContainers(ctx context.Context) ([]dockerContainerSummary, error) {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return nil, dockerNotInstalledIssue(err)
+func listDockerContainers(ctx context.Context, cli string) ([]dockerContainerSummary, error) {
+	cli = normalizeContainerCLI(cli)
+	if _, err := dockerLookPath(cli); err != nil {
+		return nil, containerCLINotInstalledIssue(cli, err)
 	}
 
-	cmd := exec.CommandContext(
+	cmd := dockerExecCommandContext(
 		ctx,
-		"docker",
+		cli,
 		"ps",
 		"--no-trunc",
 		"--format",
@@ -197,16 +246,17 @@ func listDockerContainers(ctx context.Context) ([]dockerContainerSummary, error)
 	return parseDockerPSOutput(stdout.Bytes()), nil
 }
 
-func inspectDockerContainers(ctx context.Context, ids []string) (map[string]dockerContainerInspect, error) {
+func inspectDockerContainers(ctx context.Context, ids []string, cli string) (map[string]dockerContainerInspect, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		return nil, dockerNotInstalledIssue(err)
+	cli = normalizeContainerCLI(cli)
+	if _, err := dockerLookPath(cli); err != nil {
+		return nil, containerCLINotInstalledIssue(cli, err)
 	}
 
 	args := append([]string{"inspect"}, ids...)
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerExecCommandContext(ctx, cli, args...)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -384,14 +434,11 @@ func dockerContainerIDs(containers []dockerContainerSummary) []string {
 }
 
 func targetFromDockerContainer(container dockerContainerSummary, inspect dockerContainerInspect) (RuntimeTarget, bool) {
-	if strings.TrimSpace(container.ID) == "" {
-		return RuntimeTarget{}, false
-	}
-	if container.State != "" && !strings.EqualFold(container.State, "running") {
+	if !dockerContainerEvaluable(container) {
 		return RuntimeTarget{}, false
 	}
 
-	evidence, ok := detectXrayContainer(container)
+	evidence, ok := detectXrayContainerEvidence(container, inspect)
 	if !ok {
 		return RuntimeTarget{}, false
 	}
@@ -400,11 +447,12 @@ func targetFromDockerContainer(container dockerContainerSummary, inspect dockerC
 	if inspectedCommandLine := inspect.commandLine(); len(inspectedCommandLine) != 0 {
 		commandLine = inspectedCommandLine
 	}
+	binary := chooseDockerBinary(commandLine)
 	target := RuntimeTarget{
 		Source: DiscoverySourceDockerContainer,
 		Identity: RuntimeIdentity{
 			Name:   firstNonEmpty(container.Name, dockerImageRepositoryBase(container.Image), shortContainerID(container.ID)),
-			Binary: chooseDockerBinary(container, commandLine),
+			Binary: binary,
 		},
 		DockerContainer: &DockerContainerCandidate{
 			ID:          container.ID,
@@ -414,7 +462,7 @@ func targetFromDockerContainer(container dockerContainerSummary, inspect dockerC
 			State:       container.State,
 			Status:      container.Status,
 			Labels:      cloneStringMap(inspect.Labels),
-			ConfigPaths: dockerConfigPaths(commandLine, inspect.Mounts),
+			ConfigPaths: dockerConfigPaths(commandLine, inspect.Mounts, binary),
 		},
 		Evidence: &evidence,
 	}
@@ -427,12 +475,19 @@ func detectXrayContainer(container dockerContainerSummary) (DetectionEvidence, b
 	confidence := DetectionConfidence("")
 
 	if matchesDockerImage(container.Image) {
-		reasons = append(reasons, "container image matched xray")
-		confidence = DetectionConfidenceHigh
+		repoBase := dockerImageRepositoryBase(container.Image)
+		if matchesXrayFamilyBinary(repoBase) {
+			reasons = append(reasons, fmt.Sprintf("container image %q matched xray family", repoBase))
+			confidence = DetectionConfidenceHigh
+		} else {
+			reasons = append(reasons, fmt.Sprintf("container image %q contained an xray family marker", repoBase))
+			confidence = DetectionConfidenceMedium
+		}
 	}
 
 	if matchesDockerCommand(container.Command) {
-		reasons = append(reasons, "container command matched xray")
+		commandLine := dockerCommandLine(container.Command)
+		reasons = append(reasons, fmt.Sprintf("container command %q matched xray family", normalizeBinaryBasename(commandLine[0])))
 		confidence = DetectionConfidenceHigh
 	}
 
@@ -450,6 +505,134 @@ func detectXrayContainer(container dockerContainerSummary) (DetectionEvidence, b
 	}, true
 }
 
+// xrayDefaultAPIPorts lists in-container ports that strongly suggest an Xray
+// API listener. It is a slice so additional ports can be allowed later.
+var xrayDefaultAPIPorts = []int{10085}
+
+// detectXrayContainerEvidence combines the image/command signals with the
+// richer container-inspect signals (labels and published API ports). Image and
+// command matches are High, label matches are Medium, and port matches are Low;
+// when multiple signals fire the highest confidence wins and all reasons are
+// retained.
+func detectXrayContainerEvidence(container dockerContainerSummary, inspect dockerContainerInspect) (DetectionEvidence, bool) {
+	reasons := make([]string, 0, 4)
+	confidence := DetectionConfidence("")
+
+	if base, ok := detectXrayContainer(container); ok {
+		reasons = append(reasons, base.Reasons...)
+		confidence = higherDetectionConfidence(confidence, base.Confidence)
+	}
+
+	if reason, ok := detectXrayLabelSignal(inspect.Labels); ok {
+		reasons = append(reasons, reason)
+		confidence = higherDetectionConfidence(confidence, DetectionConfidenceMedium)
+	}
+
+	if reason, ok := detectXrayPortSignal(inspect.Ports); ok {
+		reasons = append(reasons, reason)
+		confidence = higherDetectionConfidence(confidence, DetectionConfidenceLow)
+	}
+
+	if len(reasons) == 0 {
+		return DetectionEvidence{}, false
+	}
+
+	return DetectionEvidence{
+		Confidence: confidence,
+		Reasons:    reasons,
+	}, true
+}
+
+// detectXrayLabelSignal reports the first container label whose value looks like
+// an Xray-family runtime. Short identifier labels are prefix-matched; the
+// descriptive image-title label is matched by substring.
+func detectXrayLabelSignal(labels map[string]string) (string, bool) {
+	if len(labels) == 0 {
+		return "", false
+	}
+
+	rules := []struct {
+		key       string
+		substring bool
+	}{
+		{key: "app"},
+		{key: "com.docker.compose.service", substring: true},
+		{key: "org.opencontainers.image.title", substring: true},
+	}
+
+	for _, rule := range rules {
+		value := strings.TrimSpace(labels[rule.key])
+		if value == "" {
+			continue
+		}
+		matched := matchesXrayFamilyBinary(value)
+		if !matched && rule.substring {
+			matched = containsXrayFamilyMarker(value)
+		}
+		if matched {
+			return fmt.Sprintf("container label %s=%q matched xray family", rule.key, value), true
+		}
+	}
+
+	return "", false
+}
+
+// detectXrayPortSignal reports whether a container publishes a known Xray API
+// port (in-container or host side).
+func detectXrayPortSignal(ports []dockerPortBinding) (string, bool) {
+	for _, binding := range ports {
+		if isXrayAPIPort(binding.ContainerPort) || isXrayAPIPort(binding.HostPort) {
+			return fmt.Sprintf("container published Xray API port %d", binding.ContainerPort), true
+		}
+	}
+
+	return "", false
+}
+
+func isXrayAPIPort(port int) bool {
+	for _, candidate := range xrayDefaultAPIPorts {
+		if port == candidate {
+			return true
+		}
+	}
+
+	return false
+}
+
+func detectionConfidenceRank(confidence DetectionConfidence) int {
+	switch confidence {
+	case DetectionConfidenceHigh:
+		return 3
+	case DetectionConfidenceMedium:
+		return 2
+	case DetectionConfidenceLow:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func higherDetectionConfidence(current, candidate DetectionConfidence) DetectionConfidence {
+	if detectionConfidenceRank(candidate) > detectionConfidenceRank(current) {
+		return candidate
+	}
+
+	return current
+}
+
+// dockerContainerEvaluable reports whether a container should be evaluated for
+// Xray detection (it has an ID and is not in a non-running state).
+func dockerContainerEvaluable(container dockerContainerSummary) bool {
+	if strings.TrimSpace(container.ID) == "" {
+		return false
+	}
+	if container.State != "" && !strings.EqualFold(container.State, "running") {
+		return false
+	}
+
+	return true
+}
+
 func (i dockerContainerInspect) commandLine() []string {
 	if strings.TrimSpace(i.Path) == "" {
 		return nil
@@ -461,14 +644,14 @@ func (i dockerContainerInspect) commandLine() []string {
 	return commandLine
 }
 
-func dockerConfigPaths(commandLine []string, mounts []dockerMount) []string {
+func dockerConfigPaths(commandLine []string, mounts []dockerMount, binary string) []string {
 	if len(mounts) == 0 {
 		return nil
 	}
 
 	candidates := extractConfigPaths(commandLine)
 	if len(candidates) == 0 {
-		candidates = append(candidates, dockerDefaultConfigHints()...)
+		candidates = append(candidates, dockerDefaultConfigHints(binary)...)
 	}
 
 	paths := make([]string, 0, len(candidates))
@@ -490,13 +673,39 @@ func dockerConfigPaths(commandLine []string, mounts []dockerMount) []string {
 	return paths
 }
 
-func dockerDefaultConfigHints() []string {
+// dockerDefaultConfigHints derives candidate config paths from the detected
+// binary name. The OS/arch release suffix and ".exe" are stripped to form the
+// config directory, so "sanaei-linux-amd64" yields "/etc/sanaei/config.json".
+// For vanilla "xray" (or an unknown binary) the hints are the historical
+// /etc/xray and /usr/local/etc/xray paths.
+func dockerDefaultConfigHints(binary string) []string {
+	dir := dockerConfigDirName(binary)
+
 	return []string{
-		"/etc/xray/config.json",
-		"/etc/xray",
-		"/usr/local/etc/xray/config.json",
-		"/usr/local/etc/xray",
+		"/etc/" + dir + "/config.json",
+		"/etc/" + dir,
+		"/usr/local/etc/" + dir + "/config.json",
+		"/usr/local/etc/" + dir,
 	}
+}
+
+// dockerConfigDirName reduces a binary name to the config directory segment by
+// taking its basename, dropping a ".exe" suffix, and trimming the
+// "-<os>-<arch>[...]" release suffix. An empty result falls back to "xray".
+func dockerConfigDirName(binary string) string {
+	name := strings.TrimSpace(basenameOrEmpty(strings.TrimSpace(binary)))
+	name = strings.TrimSuffix(name, ".exe")
+	for _, marker := range []string{"-linux", "-darwin", "-windows"} {
+		if index := strings.Index(name, marker); index > 0 {
+			name = name[:index]
+			break
+		}
+	}
+	if name == "" {
+		return "xray"
+	}
+
+	return name
 }
 
 func mapDockerPathToHost(containerPath string, mounts []dockerMount) (string, bool) {
@@ -529,22 +738,24 @@ func mapDockerPathToHost(containerPath string, mounts []dockerMount) (string, bo
 	return "", false
 }
 
+// matchesDockerImage reports whether a container image repository base looks
+// like an Xray-family image. It uses a permissive case-insensitive substring
+// match so fork images such as "my-xray-fork" are still surfaced; callers that
+// need to distinguish a definitive family match apply matchesXrayFamilyBinary
+// to the repository base directly.
 func matchesDockerImage(image string) bool {
-	switch dockerImageRepositoryBase(image) {
-	case "xray", "xray-core":
-		return true
-	default:
-		return false
-	}
+	return containsXrayFamilyMarker(dockerImageRepositoryBase(image))
 }
 
+// matchesDockerCommand reports whether a container command's entrypoint
+// basename is an Xray-family binary using the shared prefix matcher.
 func matchesDockerCommand(command string) bool {
 	commandLine := dockerCommandLine(command)
 	if len(commandLine) == 0 {
 		return false
 	}
 
-	return basenameOrEmpty(commandLine[0]) == "xray"
+	return matchesXrayFamilyBinary(commandLine[0])
 }
 
 func dockerImageRepositoryBase(image string) string {
@@ -584,19 +795,18 @@ func normalizeDockerCommand(command string) string {
 	return strings.TrimSpace(command)
 }
 
-func chooseDockerBinary(container dockerContainerSummary, commandLine []string) string {
+// chooseDockerBinary returns the runtime binary basename from the container's
+// command line, or an empty string when the command line is unavailable. It
+// deliberately does not guess a literal "xray" from the image: an unknown
+// binary is left empty so a later runtime-config override can resolve it.
+func chooseDockerBinary(commandLine []string) string {
 	if len(commandLine) > 0 {
 		if binary := basenameOrEmpty(commandLine[0]); binary != "" {
 			return binary
 		}
 	}
 
-	switch dockerImageRepositoryBase(container.Image) {
-	case "xray", "xray-core":
-		return "xray"
-	default:
-		return ""
-	}
+	return ""
 }
 
 func shortContainerID(id string) string {
@@ -659,12 +869,31 @@ func isDockerPermissionDeniedMessage(message string) bool {
 				strings.Contains(lower, "docker api")))
 }
 
-func dockerNotInstalledIssue(err error) ProviderError {
+// containerCLINotInstalledIssue reports that the configured container CLI was
+// not found on PATH, naming the CLI so podman/nerdctl users get an accurate
+// message.
+func containerCLINotInstalledIssue(cli string, err error) ProviderError {
+	cli = normalizeContainerCLI(cli)
 	return ProviderError{
 		Code:    ProviderErrorCodeNotInstalled,
-		Message: "Docker CLI was not found.",
-		Hint:    "Install Docker if container discovery is required.",
+		Message: fmt.Sprintf("%s CLI was not found.", cli),
+		Hint:    fmt.Sprintf("Install %s if container discovery is required.", cli),
 		Err:     err,
+	}
+}
+
+// dockerNoMatchesIssue reports that running containers were scanned for Xray
+// detection but none matched any signal.
+func dockerNoMatchesIssue(scanned, matched int) ProviderError {
+	return ProviderError{
+		Code: ProviderErrorCodeNoMatches,
+		Message: fmt.Sprintf(
+			"Scanned %d running %s; %d matched Xray detection signals (image, command, labels, or API port).",
+			scanned,
+			pluralize(scanned, "container", "containers"),
+			matched,
+		),
+		Hint: "If an Xray fork is running, override detection with --xray-binary or --container-cli, or publish the API port.",
 	}
 }
 

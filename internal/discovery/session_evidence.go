@@ -77,11 +77,16 @@ const (
 	SessionEvidenceIssueUnavailable      SessionEvidenceIssueCode = "unavailable"
 	SessionEvidenceIssueInsufficient     SessionEvidenceIssueCode = "insufficient"
 	SessionEvidenceIssuePermissionDenied SessionEvidenceIssueCode = "permission_denied"
+	// SessionEvidenceIssueStatsUserOnlineNotEnabled reports that the Xray API was
+	// reachable but the fork-specific StatsUserOnline service is not enabled in
+	// the runtime's api.services list, so live online-user evidence cannot be
+	// produced until the operator enables it.
+	SessionEvidenceIssueStatsUserOnlineNotEnabled SessionEvidenceIssueCode = "stats_user_online_not_enabled"
 )
 
 func (c SessionEvidenceIssueCode) Valid() bool {
 	switch c {
-	case SessionEvidenceIssueUnavailable, SessionEvidenceIssueInsufficient, SessionEvidenceIssuePermissionDenied:
+	case SessionEvidenceIssueUnavailable, SessionEvidenceIssueInsufficient, SessionEvidenceIssuePermissionDenied, SessionEvidenceIssueStatsUserOnlineNotEnabled:
 		return true
 	default:
 		return false
@@ -146,7 +151,7 @@ func (r SessionEvidenceResult) State() SessionEvidenceState {
 		switch issue.Code {
 		case SessionEvidenceIssueInsufficient:
 			return SessionEvidenceStateInsufficient
-		case SessionEvidenceIssueUnavailable, SessionEvidenceIssuePermissionDenied:
+		case SessionEvidenceIssueUnavailable, SessionEvidenceIssuePermissionDenied, SessionEvidenceIssueStatsUserOnlineNotEnabled:
 			return SessionEvidenceStateUnavailable
 		}
 	}

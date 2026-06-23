@@ -22,12 +22,24 @@ Those checks tell you whether the host is Linux, whether the traffic-control use
 Use the release path when you want a normal installed layout and a `raylimit` command in `PATH`.
 
 ```bash
-tar -xzf raylimit_v0.3.0-beta_linux_amd64.tar.gz
-cd raylimit_v0.3.0-beta_linux_amd64
+tar -xzf raylimit_v0.4.0-beta_linux_amd64.tar.gz
+cd raylimit_v0.4.0-beta_linux_amd64
 sudo ./scripts/install.sh
 ```
 
 This installs the binary and the packaged support files to their intended system locations.
+
+### Checksum Verification
+
+`install.sh` verifies the packaged `SHA256SUMS` before copying anything into place and refuses to continue if a file does not match (a corrupt or tampered package, or a missing `sha256sum` tool, is rejected). `update.sh` performs the same check.
+
+For local development against an unsigned or hand-assembled package, bypass verification with `--skip-checksum`:
+
+```bash
+sudo ./scripts/install.sh --skip-checksum
+```
+
+Use this only when you trust the package source — it disables the integrity guard.
 
 ### Verify The Installed Path
 
@@ -66,6 +78,16 @@ make build
 ```
 
 Use the built binary when you plan to repeat the same validation steps several times on one host.
+
+### Reproducible Builds
+
+The build stamps a UTC build time into the binary. To make that stamp deterministic (for reproducible release artifacts), set `SOURCE_DATE_EPOCH` to a fixed Unix timestamp:
+
+```bash
+SOURCE_DATE_EPOCH=1700000000 make build
+```
+
+When `SOURCE_DATE_EPOCH` is unset, the current time is used; when it is set to a valid epoch, two builds produce byte-identical binaries. Reproducible builds via `SOURCE_DATE_EPOCH` rely on GNU `date` (the Linux target).
 
 ### Local-Path Discovery Check
 

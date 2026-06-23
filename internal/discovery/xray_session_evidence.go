@@ -7,10 +7,16 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const xraySessionEvidenceProviderName = "xray_api"
+
+// xrayEndpointDialTimeout bounds the reachability probe dial so an unresponsive
+// endpoint cannot stall discovery.
+const xrayEndpointDialTimeout = 2 * time.Second
 
 // RuntimeTargetDiscoverer provides runtime targets for Xray-backed evidence lookup.
 type RuntimeTargetDiscoverer interface {
@@ -30,11 +36,33 @@ type XraySessionEvidenceProvider struct {
 	RunAPICommand          xrayAPICommandRunner
 	RunContainerAPICommand xrayContainerAPICommandRunner
 	QuerySessions          xraySessionQuery
+	// Timeout bounds each xray API invocation. When zero the provider falls
+	// back to defaultXrayAPITimeout.
+	Timeout time.Duration
+	// XrayBinaryOverride, when set, takes precedence over the detected Xray
+	// executable path / binary name when querying the API.
+	XrayBinaryOverride string
+	// ContainerCLI overrides the container runtime CLI used for containerized
+	// runtime queries. An empty value uses the default ("docker").
+	ContainerCLI string
 }
 
+// XraySessionEvidenceProviderOption customizes a provider at construction time.
+type XraySessionEvidenceProviderOption func(*XraySessionEvidenceProvider)
+
 // NewXraySessionEvidenceProvider returns the default Xray-backed evidence provider.
-func NewXraySessionEvidenceProvider(discoverer RuntimeTargetDiscoverer) XraySessionEvidenceProvider {
-	return XraySessionEvidenceProvider{Discoverer: discoverer}
+func NewXraySessionEvidenceProvider(discoverer RuntimeTargetDiscoverer, opts ...XraySessionEvidenceProviderOption) XraySessionEvidenceProvider {
+	provider := XraySessionEvidenceProvider{
+		Discoverer: discoverer,
+		Timeout:    defaultXrayAPITimeout,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&provider)
+		}
+	}
+
+	return provider
 }
 
 func (p XraySessionEvidenceProvider) Name() string {
@@ -121,8 +149,7 @@ func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime Sessio
 	}
 
 	if requiresHostReachableAPIEndpoints(target) && len(target.ReachableAPIEndpoints) == 0 && len(target.APIEndpoints) != 0 {
-		message := "Xray API capability was inferred, but no concrete API endpoint hint is available for live session evidence"
-		message = "Xray API capability was inferred, but only runtime-local API endpoint hints are available; no host-reachable endpoint mapping was evident for live session evidence"
+		message := "Xray API capability was inferred, but only runtime-local API endpoint hints are available; no host-reachable endpoint mapping was evident for live session evidence"
 		result.Issues = append(result.Issues, SessionEvidenceIssue{
 			Code:    SessionEvidenceIssueInsufficient,
 			Message: message,
@@ -141,8 +168,6 @@ func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime Sessio
 
 	probe := p.endpointProbe()
 	query := p.sessionQuery()
-	var reachable bool
-	var queryFailures int
 
 	for _, endpoint := range endpoints {
 		if err := ctx.Err(); err != nil {
@@ -153,11 +178,9 @@ func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime Sessio
 			result.Issues = append(result.Issues, endpointProbeIssue(endpoint, err))
 			continue
 		}
-		reachable = true
 
 		observed, err := query(ctx, target, endpoint)
 		if err != nil {
-			queryFailures++
 			result.Issues = append(result.Issues, sessionQueryIssue(endpoint, err))
 			continue
 		}
@@ -174,18 +197,16 @@ func (p XraySessionEvidenceProvider) observe(ctx context.Context, runtime Sessio
 		return result, nil
 	}
 
-	if !reachable {
-		return result, nil
-	}
-	if queryFailures != 0 && len(result.Evidence) == 0 {
-		return result, nil
-	}
-
 	return result, nil
 }
 
 func (p XraySessionEvidenceProvider) apiDetector() APICapabilityDetector {
-	return p.APIDetector.withDefaults()
+	detector := p.APIDetector
+	if strings.TrimSpace(detector.containerCLI) == "" {
+		detector.containerCLI = normalizeContainerCLI(p.ContainerCLI)
+	}
+
+	return detector.withDefaults()
 }
 
 func (p XraySessionEvidenceProvider) endpointProbe() xrayEndpointProbe {
@@ -201,7 +222,23 @@ func (p XraySessionEvidenceProvider) sessionQuery() xraySessionQuery {
 		return p.QuerySessions
 	}
 
-	return defaultXraySessionQuery(p.apiCommandRunner(), p.containerAPICommandRunner())
+	return defaultXraySessionQuery(p.apiCommandRunner(), p.containerAPICommandRunner(), p.resolveTimeout(), strings.TrimSpace(p.XrayBinaryOverride))
+}
+
+// resolveContainerCLI returns the configured container CLI, defaulting to
+// "docker" when unset.
+func (p XraySessionEvidenceProvider) resolveContainerCLI() string {
+	return normalizeContainerCLI(p.ContainerCLI)
+}
+
+// resolveTimeout returns the configured per-call xray API timeout, falling back
+// to defaultXrayAPITimeout when unset.
+func (p XraySessionEvidenceProvider) resolveTimeout() time.Duration {
+	if p.Timeout > 0 {
+		return p.Timeout
+	}
+
+	return defaultXrayAPITimeout
 }
 
 func (p XraySessionEvidenceProvider) apiCommandRunner() xrayAPICommandRunner {
@@ -217,7 +254,10 @@ func (p XraySessionEvidenceProvider) containerAPICommandRunner() xrayContainerAP
 		return p.RunContainerAPICommand
 	}
 
-	return defaultXrayContainerAPICommandRunner
+	cli := p.resolveContainerCLI()
+	return func(ctx context.Context, containerID string, binary string, server string, timeout time.Duration, command string, args ...string) ([]byte, error) {
+		return runXrayContainerAPICommand(ctx, cli, containerID, binary, server, timeout, command, args...)
+	}
 }
 
 func matchRuntimeTargets(targets []RuntimeTarget, runtime SessionRuntime) []RuntimeTarget {
@@ -284,11 +324,7 @@ func defaultXrayEndpointProbe(ctx context.Context, endpoint APIEndpoint) error {
 	switch endpoint.Network {
 	case EndpointNetworkTCP:
 		network = "tcp"
-		host := strings.TrimSpace(endpoint.Address)
-		if host == "" || host == "0.0.0.0" || host == "::" {
-			host = "127.0.0.1"
-		}
-		address = net.JoinHostPort(host, fmt.Sprintf("%d", endpoint.Port))
+		address = net.JoinHostPort(normalizeWildcardListenHost(endpoint.Address), strconv.Itoa(endpoint.Port))
 	case EndpointNetworkUnix:
 		network = "unix"
 		address = strings.TrimSpace(endpoint.Path)
@@ -296,7 +332,7 @@ func defaultXrayEndpointProbe(ctx context.Context, endpoint APIEndpoint) error {
 		return fmt.Errorf("unsupported api endpoint network %q", endpoint.Network)
 	}
 
-	conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+	conn, err := (&net.Dialer{Timeout: xrayEndpointDialTimeout}).DialContext(ctx, network, address)
 	if err != nil {
 		return err
 	}

@@ -245,8 +245,47 @@ func ObservedManagedState(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, pla
 	return state, nil
 }
 
+// ReconcileRetainEvidence captures the current runtime-derived proof gates that
+// allow an owner to remain valid or be recreated cheaply.
+type ReconcileRetainEvidence struct {
+	AllowsRetain   bool   `json:"allows_retain,omitempty"`
+	AllowsRecreate bool   `json:"allows_recreate,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+func (e ReconcileRetainEvidence) Validate() error {
+	return nil
+}
+
+// PeriodicReconcileInput is the owner-aware managed-state delta contract that
+// ReconcileInputForPlan derives for one plan.
+type PeriodicReconcileInput struct {
+	Desired        ManagedStateSet         `json:"desired"`
+	Observed       ManagedStateSet         `json:"observed"`
+	RetainEvidence ReconcileRetainEvidence `json:"retain_evidence,omitempty"`
+}
+
+func (i PeriodicReconcileInput) Validate() error {
+	if err := i.Desired.Validate(); err != nil {
+		return fmt.Errorf("invalid desired managed state: %w", err)
+	}
+	if err := i.Observed.Validate(); err != nil {
+		return fmt.Errorf("invalid observed managed state: %w", err)
+	}
+	if strings.TrimSpace(i.Desired.OwnerKey) != "" &&
+		strings.TrimSpace(i.Observed.OwnerKey) != "" &&
+		strings.TrimSpace(i.Desired.OwnerKey) != strings.TrimSpace(i.Observed.OwnerKey) {
+		return errors.New("desired and observed managed state do not describe the same owner")
+	}
+	if err := i.RetainEvidence.Validate(); err != nil {
+		return fmt.Errorf("invalid retain evidence: %w", err)
+	}
+
+	return nil
+}
+
 // ReconcileInputForPlan derives the desired and observed managed state sets
-// for one concrete plan so later periodic reconcile decisions can consume one
+// for one concrete plan so periodic reconcile decisions can consume one
 // validated contract.
 func ReconcileInputForPlan(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, plan Plan) (PeriodicReconcileInput, error) {
 	desired, err := DesiredManagedState(plan)
@@ -268,89 +307,6 @@ func ReconcileInputForPlan(tcSnapshot Snapshot, nftSnapshot NftablesSnapshot, pl
 	}
 
 	return input, nil
-}
-
-// ClassifyManagedState compares desired and observed managed objects and marks
-// observed-only objects as stale with explicit cleanup gates.
-func ClassifyManagedState(desired ManagedStateSet, observed ManagedStateSet) (ManagedStateInventory, error) {
-	if err := desired.Validate(); err != nil {
-		return ManagedStateInventory{}, err
-	}
-	if err := observed.Validate(); err != nil {
-		return ManagedStateInventory{}, err
-	}
-	if strings.TrimSpace(desired.OwnerKey) != "" &&
-		strings.TrimSpace(observed.OwnerKey) != "" &&
-		strings.TrimSpace(desired.OwnerKey) != strings.TrimSpace(observed.OwnerKey) {
-		return ManagedStateInventory{}, errors.New("desired and observed managed state sets do not describe the same owner")
-	}
-
-	ownerKey := strings.TrimSpace(desired.OwnerKey)
-	if ownerKey == "" {
-		ownerKey = strings.TrimSpace(observed.OwnerKey)
-	}
-	inventory := ManagedStateInventory{
-		OwnerKey: ownerKey,
-		Desired:  append([]ManagedObject(nil), desired.Objects...),
-		Observed: append([]ManagedObject(nil), observed.Objects...),
-	}
-
-	desiredObjects := make(map[string]struct{}, len(desired.Objects))
-	for _, object := range desired.Objects {
-		desiredObjects[object.fingerprint()] = struct{}{}
-	}
-
-	for _, object := range observed.Objects {
-		if _, ok := desiredObjects[object.fingerprint()]; ok {
-			continue
-		}
-
-		stale := StaleManagedObject{
-			Object:          object,
-			CleanupEligible: !object.CleanupRequiresRuntimeEvidence,
-			CleanupReason:   "managed object is observed without a desired counterpart and can be removed from observed owned state",
-		}
-		switch object.Kind {
-		case ManagedObjectRootQDisc:
-			stale.CleanupEligible = object.CleanupEligible
-			if stale.CleanupEligible {
-				stale.CleanupReason = "managed root qdisc is observed without a desired counterpart and observed owned state allows safe cleanup"
-			} else {
-				stale.CleanupReason = "managed root qdisc is observed without a desired counterpart, but observed owned state does not yet allow safe cleanup"
-			}
-		case ManagedObjectMarkAttachmentTable:
-			stale.CleanupEligible = object.CleanupEligible
-			if stale.CleanupEligible {
-				stale.CleanupReason = "managed nftables table is observed without a desired counterpart and only managed chains remain in that table"
-			} else {
-				stale.CleanupReason = "managed nftables table is observed without a desired counterpart, but unmanaged or unrelated chains still remain in that table"
-			}
-		case ManagedObjectMarkAttachmentChain, ManagedObjectMarkAttachmentRestoreChain:
-			stale.CleanupEligible = object.CleanupEligible
-			if stale.CleanupEligible {
-				stale.CleanupReason = "managed nftables chain is observed without a desired counterpart and only managed rules remain in that chain"
-			} else {
-				stale.CleanupReason = "managed nftables chain is observed without a desired counterpart, but unmanaged or unrelated rules still remain in that chain"
-			}
-		default:
-			if object.CleanupRequiresRuntimeEvidence {
-				stale.CleanupEligible = false
-				stale.CleanupReason = "managed object is observed without a desired counterpart, but cleanup still requires live runtime evidence"
-			}
-		}
-		inventory.Stale = append(inventory.Stale, stale)
-	}
-
-	sortManagedObjects(inventory.Desired)
-	sortManagedObjects(inventory.Observed)
-	sort.Slice(inventory.Stale, func(i, j int) bool {
-		return inventory.Stale[i].Object.fingerprint() < inventory.Stale[j].Object.fingerprint()
-	})
-	if err := inventory.Validate(); err != nil {
-		return ManagedStateInventory{}, err
-	}
-
-	return inventory, nil
 }
 
 func managedOwnerKeyForSubject(subject limiter.Subject) string {
@@ -620,7 +576,7 @@ func markAttachmentFilterManagedObjectID(spec MarkAttachmentFilterSpec) string {
 	return strings.Join([]string{
 		strings.TrimSpace(spec.Parent),
 		strings.TrimSpace(spec.ClassID),
-		strconvFormatUint(uint64(spec.Preference)),
+		fmt.Sprintf("%d", uint64(spec.Preference)),
 		spec.handleArg(),
 	}, "|")
 }
@@ -629,8 +585,4 @@ func sortManagedObjects(objects []ManagedObject) {
 	sort.Slice(objects, func(i, j int) bool {
 		return objects[i].fingerprint() < objects[j].fingerprint()
 	})
-}
-
-func strconvFormatUint(value uint64) string {
-	return fmt.Sprintf("%d", value)
 }

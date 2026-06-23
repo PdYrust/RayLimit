@@ -128,6 +128,7 @@ type Plan struct {
 	Scope               Scope                     `json:"scope"`
 	Binding             Binding                   `json:"binding"`
 	Handles             Handles                   `json:"handles"`
+	TCBinary            string                    `json:"tc_binary,omitempty"`
 	AttachmentExecution DirectAttachmentExecution `json:"attachment_execution"`
 	MarkAttachment      *MarkAttachmentExecution  `json:"mark_attachment,omitempty"`
 	Steps               []Step                    `json:"steps,omitempty"`
@@ -227,6 +228,7 @@ func (p Planner) Plan(action limiter.Action, scope Scope) (Plan, error) {
 			RootHandle: scope.rootHandle(),
 			ClassID:    deriveClassID(action.Subject, scope.Direction, scope.rootHandle()),
 		},
+		TCBinary: p.binary(),
 	}
 
 	if err := plan.Handles.Validate(); err != nil {
@@ -268,7 +270,16 @@ func (p Planner) applySteps(plan Plan, desired limiter.DesiredState) ([]Step, er
 	}
 
 	steps := []Step{
-		p.step("ensure-root-qdisc", "qdisc", "replace", "dev", plan.Scope.Device, "root", "handle", plan.Handles.RootHandle, "htb"),
+		// Use "add" rather than "replace" for the root qdisc. "replace" on a root
+		// qdisc tears down and recreates the entire subtree, destroying sibling
+		// classes and filters (for example the upload class when the download
+		// apply runs second) and failing with EEXIST/EBUSY on busy trees. "add"
+		// is non-destructive: it creates the root qdisc when absent and is treated
+		// as an idempotent success when the managed root already exists (see the
+		// executor's already-exists recovery in runner.go, which is the live
+		// backstop). A plan-time counterpart, AppendIdempotentApply, also exists
+		// but is Deferred: not wired into production (see its definition).
+		p.step(stepEnsureRootQDisc, "qdisc", "add", "dev", plan.Scope.Device, "root", "handle", plan.Handles.RootHandle, "htb"),
 	}
 	if desired.Mode == limiter.DesiredModeLimit {
 		rate, err := rateForDirection(desired.Limits, plan.Scope.Direction)
@@ -276,7 +287,7 @@ func (p Planner) applySteps(plan Plan, desired limiter.DesiredState) ([]Step, er
 			return nil, err
 		}
 		steps = append(steps,
-			p.step("upsert-class", "class", "replace", "dev", plan.Scope.Device, "parent", plan.Handles.RootHandle, "classid", plan.Handles.ClassID, "htb", "rate", rate, "ceil", rate),
+			p.step(stepUpsertClass, "class", "replace", "dev", plan.Scope.Device, "parent", plan.Handles.RootHandle, "classid", plan.Handles.ClassID, "htb", "rate", rate, "ceil", rate),
 		)
 	}
 	if plan.AttachmentExecution.Readiness == BindingReadinessReady {
@@ -393,6 +404,9 @@ func (p Planner) binary() string {
 }
 
 func tcCommandPath(plan Plan) string {
+	if binary := strings.TrimSpace(plan.TCBinary); binary != "" {
+		return binary
+	}
 	for _, step := range plan.Steps {
 		if isTCCommand(step.Command) && strings.TrimSpace(step.Command.Path) != "" {
 			return strings.TrimSpace(step.Command.Path)
@@ -407,12 +421,17 @@ func isTCCommand(command Command) bool {
 		return false
 	}
 
-	switch strings.TrimSpace(command.Args[0]) {
-	case "qdisc", "class", "filter", "-j":
-		return true
-	default:
-		return false
+	// Classify by any tc object keyword anywhere in the argument list so the
+	// detection is robust to leading global flags (for example "-s", "-N", or
+	// "-j") preceding the subcommand.
+	for _, arg := range command.Args {
+		switch strings.TrimSpace(arg) {
+		case "qdisc", "class", "filter":
+			return true
+		}
 	}
+
+	return false
 }
 
 func (p Planner) removeClassIDs(applied []limiter.AppliedState, handles Handles) ([]string, error) {
@@ -668,7 +687,7 @@ func (p Planner) directAttachmentApplySteps(plan Plan) []Step {
 		switch rule.Classifier {
 		case DirectAttachmentClassifierMatchAll:
 			steps = append(steps, p.step(
-				fmt.Sprintf("upsert-direct-attachment-%d", index+1),
+				fmt.Sprintf("%s%d", stepUpsertDirectAttachPrefix, index+1),
 				"filter", "replace",
 				"dev", plan.Scope.Device,
 				"parent", plan.Handles.RootHandle,
@@ -694,7 +713,7 @@ func (p Planner) directAttachmentApplySteps(plan Plan) []Step {
 			} else {
 				args = append(args, "action", "pass")
 			}
-			steps = append(steps, p.step(fmt.Sprintf("upsert-direct-attachment-%d", index+1), args...))
+			steps = append(steps, p.step(fmt.Sprintf("%s%d", stepUpsertDirectAttachPrefix, index+1), args...))
 		}
 	}
 

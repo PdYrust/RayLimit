@@ -17,6 +17,19 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Lint shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHELLCHECK_VERSION=v0.10.0
+          url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          tmpdir="$(mktemp -d)"
+          curl -fsSL "$url" -o "$tmpdir/shellcheck.tar.xz"
+          tar -xJf "$tmpdir/shellcheck.tar.xz" -C "$tmpdir"
+          shellcheck="$tmpdir/shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          "$shellcheck" --version
+          "$shellcheck" -x scripts/*.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

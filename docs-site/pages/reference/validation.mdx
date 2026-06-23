@@ -2,6 +2,21 @@
 
 Use this runbook when validating RayLimit on a real Linux host.
 
+## Source-Level Checks
+
+When validating from a checkout, run the make targets that match your change before exercising the binary on a host:
+
+```bash
+make test         # go vet + full test suite
+make test-race    # test suite under the race detector
+make vet          # go vet across all packages
+make vuln         # govulncheck across all packages
+make shellcheck   # shellcheck the release shell scripts
+make build        # build bin/raylimit
+```
+
+Use the narrowest set that matches your change; `make test-race`, `make vuln`, and `make shellcheck` are most relevant when touching concurrency, dependencies, or the installer scripts respectively.
+
 ## Host Readiness Checks
 
 ```bash

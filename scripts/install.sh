@@ -1,7 +1,5 @@
 #!/bin/sh
 
-# shellcheck disable=SC2034
-
 set -eu
 umask 022
 
@@ -22,6 +20,7 @@ Options:
   --share-dir PATH     RayLimit shared metadata directory (default: DATADIR/raylimit)
   --destdir PATH       Staging root for packaging or local validation
   --no-sudo            Do not auto-reexec through sudo
+  --skip-checksum      Skip SHA256SUMS verification of the release package
   --help               Show this help
 EOF
 }
@@ -85,6 +84,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-sudo)
             RAYLIMIT_NO_SUDO=1
+            shift
+            ;;
+        --skip-checksum)
+            RAYLIMIT_SKIP_CHECKSUM=1
             shift
             ;;
         --help)

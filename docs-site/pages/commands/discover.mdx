@@ -37,6 +37,24 @@ Use JSON when you need:
 - a saved runtime inventory snapshot
 - a machine-readable input to later validation or orchestration
 
+## How Detection Works
+
+Discovery recognizes both vanilla Xray and the Sanaei fork through prefix-matched binary names, plus container image, command, label, and published-port signals. The full detection and binary-resolution rules live in [Runtime Targeting](../core-concepts/runtime-targeting); discovery is where those signals first surface.
+
+Point discovery at a fork binary installed at a non-standard path:
+
+```bash
+sudo raylimit discover --xray-binary /opt/sanaei/sanaei-linux-amd64
+```
+
+Scan containers under a non-default CLI:
+
+```bash
+sudo raylimit discover --container-cli podman
+```
+
+When running containers are scanned but none match any Xray signal, discovery records a `no_matches` limitation. It is informational, not fatal: host-process results (and other sources) are still returned.
+
 ## Provider Errors And Partial Results
 
 Discovery can still return useful runtime data even when one provider reports an error. Read provider errors as a signal that one discovery path is incomplete, not as proof that every runtime is unusable.
