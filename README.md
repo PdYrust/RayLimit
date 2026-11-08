@@ -109,4 +109,4 @@ make shellcheck   # shellcheck the release shell scripts
 
 ## License
 
-RayLimit is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE).
+under the GNU Affero General Public License v3.0 (AGPL-3.0). See [LICENSE](LICENSE).
